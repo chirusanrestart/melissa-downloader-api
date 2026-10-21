@@ -27,6 +27,7 @@ Pass the key in the `X-API-Key` header. Owner requests are selected before norma
 ## Limits and safety
 
 - One yt-dlp extraction subprocess at a time.
+- `curl_cffi` is installed and yt-dlp impersonation is enabled by default with `YTDLP_IMPERSONATE=chrome`; set another supported target in the environment to override it.
 - `MAX_QUEUE` limits waiting/active jobs; full queue returns HTTP 429.
 - `EXTRACT_TIMEOUT` bounds each extraction.
 - Request body is capped and initial URLs must use HTTPS and an allowed platform hostname.
