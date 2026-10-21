@@ -218,7 +218,7 @@ class Handler(BaseHTTPRequestHandler):
         if "error" in item:
             self.send_json(422, {"error": "extraction_failed", "message": item["error"], "request_id": item["id"]})
             return
-        self.send_json(200, {"ok": True, "request_id": item["id"], **item["result"]})
+        self.send_json(200, item["result"])
 
 
 if __name__ == "__main__":
