@@ -160,7 +160,23 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_GET(self) -> None:
-        if self.path.rstrip("/") == "/health":
+        path = urlparse(self.path).path.rstrip("/") or "/"
+        if path == "/":
+            self.send_json(200, {
+                "ok": True,
+                "service": "melissa-downloader-api",
+                "message": "Melissa Downloader API está online.",
+                "endpoints": {
+                    "health": "/health",
+                    "extract": {
+                        "method": "POST",
+                        "path": "/extract",
+                        "authentication": "X-API-Key",
+                        "body": {"url": "https://..."}
+                    }
+                }
+            })
+        elif path == "/health":
             self.send_json(200, {"ok": True, "service": "melissa-downloader-api"})
         else:
             self.send_json(404, {"error": "not_found"})
