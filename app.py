@@ -8,10 +8,8 @@ import json
 import logging
 import os
 import queue
-import re
 import subprocess
 import threading
-import time
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse
@@ -98,7 +96,6 @@ def extract_direct_url(url: str) -> dict:
         "url": direct_url,
         "title": str(data.get("title") or "")[:200],
         "extractor": str(data.get("extractor_key") or data.get("extractor") or "unknown")[:80],
-        "expires": data.get("release_timestamp"),
     }
 
 
