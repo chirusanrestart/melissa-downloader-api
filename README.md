@@ -34,6 +34,16 @@ Pass the key in the `X-API-Key` header. Owner requests are selected before norma
 - Do not expose keys in URLs, chat messages, logs, or public source code.
 - Direct media URLs can expire and may require headers/cookies. This API does not guarantee every platform or link will work.
 
+## Public deployment (Render)
+
+Base URL: `https://melissa-downloader-api.onrender.com`
+
+- `GET https://melissa-downloader-api.onrender.com/`: service status and endpoint overview.
+- `GET https://melissa-downloader-api.onrender.com/health`: Render health check.
+- `POST https://melissa-downloader-api.onrender.com/extract`: submit an extraction request with the `X-API-Key` header and JSON body `{"url":"https://..." }`.
+
+The service binds to `0.0.0.0` and uses the port supplied by Render through `PORT`. Clients outside Render should call the public base URL above, not `localhost`. `localhost` is only for requests made from the same machine where the service is running.
+
 ## Run locally
 
 ```sh
