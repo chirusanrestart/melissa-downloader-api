@@ -135,9 +135,8 @@ def worker() -> None:
                 item["event"].set()
         finally:
             source.task_done()
-            # Drop temporary references promptly between jobs. This does not
-            # guarantee RSS shrinks, but lets Python reclaim unreachable objects.
-            item.clear()
+            # Reclaim cyclic garbage between jobs. Python may retain freed
+            # arenas, so this does not guarantee that process RSS immediately falls.
             gc.collect()
             with pending_lock:
                 pending_count = max(0, pending_count - 1)
