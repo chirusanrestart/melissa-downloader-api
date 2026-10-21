@@ -59,11 +59,7 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(body["error"], "unsupported_or_invalid_url")
 
     def test_valid_request_returns_extracted_url(self):
-        expected = {
-            "url": "https://cdn.example.test/direct.mp4",
-            "title": "test video",
-            "extractor": "Test",
-        }
+        expected = {"url": "https://cdn.example.test/direct.mp4"}
         with patch.object(app, "extract_direct_url", return_value=expected):
             status, body = self.request(
                 "/extract",
@@ -71,9 +67,7 @@ class ApiTests(unittest.TestCase):
                 "test-friend-key",
             )
         self.assertEqual(status, 200)
-        self.assertTrue(body["ok"])
-        self.assertEqual(body["url"], expected["url"])
-        self.assertEqual(body["title"], "test video")
+        self.assertEqual(body, expected)
 
     def test_url_validation(self):
         self.assertTrue(app.allowed_url("https://youtu.be/abc"))
