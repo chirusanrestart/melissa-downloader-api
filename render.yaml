@@ -1,0 +1,19 @@
+services:
+  - type: web
+    name: melissa-downloader-api
+    runtime: python
+    plan: free
+    buildCommand: pip install --no-cache-dir -r requirements.txt
+    startCommand: python app.py
+    healthCheckPath: /health
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.11
+      - key: MAX_QUEUE
+        value: 30
+      - key: EXTRACT_TIMEOUT
+        value: 90
+      - key: OWNER_API_KEY
+        sync: false
+      - key: FRIEND_API_KEY
+        sync: false
