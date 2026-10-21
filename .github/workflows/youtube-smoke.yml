@@ -1,6 +1,11 @@
 name: YouTube smoke test
 
 on:
+  push:
+    branches: [main]
+    paths:
+      - "app.py"
+      - ".github/workflows/youtube-smoke.yml"
   workflow_dispatch:
 
 permissions:
