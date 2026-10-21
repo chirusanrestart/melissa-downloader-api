@@ -46,6 +46,14 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertTrue(body["ok"])
 
+    def test_reports_missing_server_key_configuration(self):
+        with patch.object(app, "OWNER_API_KEY", ""), patch.object(app, "FRIEND_API_KEY", ""):
+            status, body = self.request(
+                "/extract", {"url": "https://www.youtube.com/watch?v=abc"}, "any-key"
+            )
+        self.assertEqual(status, 503)
+        self.assertEqual(body["error"], "server_misconfigured")
+
     def test_rejects_missing_key(self):
         status, body = self.request("/extract", {"url": "https://www.youtube.com/watch?v=abc"})
         self.assertEqual(status, 401)
