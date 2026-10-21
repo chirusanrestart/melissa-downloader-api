@@ -8,6 +8,7 @@ import json
 import logging
 import os
 import queue
+import gc
 import subprocess
 import threading
 import uuid
@@ -62,6 +63,10 @@ def extract_direct_url(url: str) -> dict:
         "--no-warnings",
         "--no-playlist",
         "--skip-download",
+        "--no-cache-dir",
+        "--no-write-info-json",
+        "--no-write-playlist-metafiles",
+        "--no-write-thumbnail",
         "--dump-single-json",
         "--socket-timeout", "15",
     ]
@@ -76,6 +81,7 @@ def extract_direct_url(url: str) -> dict:
         text=True,
         timeout=EXTRACT_TIMEOUT,
         check=False,
+        env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1", "PYTHONUNBUFFERED": "1"},
     )
     if completed.returncode != 0:
         LOG.warning("yt-dlp failed (exit=%s): %s", completed.returncode, completed.stderr[-500:])
@@ -129,6 +135,10 @@ def worker() -> None:
                 item["event"].set()
         finally:
             source.task_done()
+            # Drop temporary references promptly between jobs. This does not
+            # guarantee RSS shrinks, but lets Python reclaim unreachable objects.
+            item.clear()
+            gc.collect()
             with pending_lock:
                 pending_count = max(0, pending_count - 1)
 
