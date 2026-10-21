@@ -106,12 +106,20 @@ def worker() -> None:
     global pending_count
     while True:
         # Strict priority: drain owner work before normal work.
-        try:
-            item = priority_queue.get_nowait()
-            source = priority_queue
-        except queue.Empty:
-            item = normal_queue.get()
-            source = normal_queue
+        item = None
+        source = None
+        # Poll both queues so a newly arrived priority request can preempt
+        # normal requests that have not started yet.
+        while item is None:
+            try:
+                item = priority_queue.get_nowait()
+                source = priority_queue
+            except queue.Empty:
+                try:
+                    item = normal_queue.get(timeout=0.2)
+                    source = normal_queue
+                except queue.Empty:
+                    continue
 
         try:
             try:
