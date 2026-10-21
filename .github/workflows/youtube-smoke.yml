@@ -24,15 +24,13 @@ jobs:
           python-version: "3.11"
       - name: Install extractor without pip cache
         run: python -m pip install --disable-pip-version-check --no-cache-dir -r requirements.txt
-      - name: Extract metadata from a public YouTube test video
+      - name: Extract a temporary MP4 URL from a public YouTube video
         run: |
           python - <<'PY'
           from app import extract_direct_url
 
-          result = extract_direct_url("https://www.youtube.com/watch?v=BaW_jenozKc")
+          result = extract_direct_url("https://www.youtube.com/watch?v=aqz-KE-bpKQ")
           assert result.get("url", "").startswith("http"), "No direct media URL returned"
           print("YouTube extraction succeeded")
-          print("Title:", result.get("title", "(no title)"))
-          print("Extractor:", result.get("extractor", "unknown"))
           print("Direct URL: present (not printed because it may expire)")
           PY
