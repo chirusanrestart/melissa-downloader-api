@@ -73,9 +73,10 @@ def extract_direct_url(url: str) -> dict:
         "-f", "best[ext=mp4][height<=720][vcodec!=none][acodec!=none]/best[height<=720][vcodec!=none][acodec!=none]",
         "-g",
     ]
-    impersonate = os.getenv("YTDLP_IMPERSONATE", "").strip()
-    if impersonate:
-        command.extend(["--impersonate", impersonate])
+    # Always use curl_cffi-backed impersonation by default. Set
+    # YTDLP_IMPERSONATE to a supported target to override "chrome".
+    impersonate = os.getenv("YTDLP_IMPERSONATE", "chrome").strip() or "chrome"
+    command.extend(["--impersonate", impersonate])
     command.append(url)
 
     completed = subprocess.run(
