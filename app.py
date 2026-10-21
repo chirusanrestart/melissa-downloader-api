@@ -56,7 +56,7 @@ def allowed_url(value: str) -> bool:
 
 
 def extract_direct_url(url: str) -> dict:
-    """Ask yt-dlp for metadata only; no media bytes are downloaded."""
+    """Extract one temporary progressive MP4 URL without downloading media."""
     command = [
         os.getenv("PYTHON", "python"),
         "-m", "yt_dlp",
@@ -67,8 +67,11 @@ def extract_direct_url(url: str) -> dict:
         "--no-write-info-json",
         "--no-write-playlist-metafiles",
         "--no-write-thumbnail",
-        "--dump-single-json",
         "--socket-timeout", "15",
+        # Prefer a single MP4 stream with audio, capped at 720p.
+        # Requiring both codecs avoids returning separate video/audio URLs.
+        "-f", "best[ext=mp4][height<=720][vcodec!=none][acodec!=none]/best[height<=720][vcodec!=none][acodec!=none]",
+        "-g",
     ]
     impersonate = os.getenv("YTDLP_IMPERSONATE", "").strip()
     if impersonate:
@@ -85,24 +88,13 @@ def extract_direct_url(url: str) -> dict:
     )
     if completed.returncode != 0:
         LOG.warning("yt-dlp failed (exit=%s): %s", completed.returncode, completed.stderr[-500:])
-        raise RuntimeError("Não foi possível extrair este link.")
-    try:
-        data = json.loads(completed.stdout)
-    except json.JSONDecodeError as exc:
-        raise RuntimeError("O extrator devolveu uma resposta inválida.") from exc
-
-    direct_url = data.get("url")
-    if not direct_url:
-        formats = data.get("requested_formats") or data.get("formats") or []
-        direct_url = next((item.get("url") for item in formats if item.get("url")), None)
-    if not direct_url:
-        raise RuntimeError("Nenhuma URL direta foi encontrada.")
-
-    return {
-        "url": direct_url,
-        "title": str(data.get("title") or "")[:200],
-        "extractor": str(data.get("extractor_key") or data.get("extractor") or "unknown")[:80],
-    }
+        raise RuntimeError("Não foi possível extrair um link MP4 com áudio até 720p.")
+    # -g prints direct media URLs only. The format selector should yield one
+    # progressive URL; reject unexpected multiple lines rather than guessing.
+    urls = [line.strip() for line in completed.stdout.splitlines() if line.strip()]
+    if len(urls) != 1 or not urls[0].startswith(("https://", "http://")):
+        raise RuntimeError("O extrator não devolveu uma única URL direta.")
+    return {"url": urls[0]}
 
 
 def worker() -> None:
