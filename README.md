@@ -4,7 +4,7 @@ A small Python HTTP service that uses local yt-dlp to extract direct media URLs.
 
 ## Endpoints
 
-- `GET /health`: health check.
+- `GET /health`: health check. The response includes `auth_configured: true` only when both API-key environment variables are present.
 - `POST /extract`: extract a supported public media URL.
 
 Example:
@@ -55,7 +55,12 @@ export FRIEND_API_KEY='change-me-friend'
 python app.py
 ```
 
-On Render, set the two secrets in the service environment. `render.yaml` contains the service blueprint.
+On Render, open **Dashboard → your service → Environment** and set both variables to the exact values your client sends:
+
+- `OWNER_API_KEY`: owner key, which receives priority.
+- `FRIEND_API_KEY`: friends key, which uses the normal queue.
+
+Save changes and wait for the service to redeploy. These values are intentionally not stored in GitHub. If either variable is missing, `/extract` now returns HTTP `503` with `server_misconfigured`; if the variables exist but the submitted key does not match, it returns HTTP `401` with `unauthorized`. Check `/health` for `auth_configured`. `render.yaml` contains the service blueprint.
 
 ## Tests
 
