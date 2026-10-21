@@ -177,7 +177,11 @@ class Handler(BaseHTTPRequestHandler):
                 }
             })
         elif path == "/health":
-            self.send_json(200, {"ok": True, "service": "melissa-downloader-api"})
+            self.send_json(200, {
+                "ok": True,
+                "service": "melissa-downloader-api",
+                "auth_configured": bool(OWNER_API_KEY and FRIEND_API_KEY),
+            })
         else:
             self.send_json(404, {"error": "not_found"})
 
@@ -185,6 +189,15 @@ class Handler(BaseHTTPRequestHandler):
         global pending_count
         if self.path.rstrip("/") != "/extract":
             self.send_json(404, {"error": "not_found"})
+            return
+
+        # Distinguish a server setup problem from an invalid client key.
+        # Render secrets must be configured in the service Environment settings.
+        if not OWNER_API_KEY or not FRIEND_API_KEY:
+            self.send_json(503, {
+                "error": "server_misconfigured",
+                "message": "Configure OWNER_API_KEY and FRIEND_API_KEY in the server environment.",
+            })
             return
 
         supplied = self.headers.get("X-API-Key", "")
