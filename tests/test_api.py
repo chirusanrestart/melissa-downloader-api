@@ -63,7 +63,6 @@ class ApiTests(unittest.TestCase):
             "url": "https://cdn.example.test/direct.mp4",
             "title": "test video",
             "extractor": "Test",
-            "expires": None,
         }
         with patch.object(app, "extract_direct_url", return_value=expected):
             status, body = self.request(
