@@ -4,6 +4,7 @@ import unittest
 from http.server import ThreadingHTTPServer
 from urllib.request import Request, urlopen
 from urllib.error import HTTPError
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import app
@@ -76,6 +77,20 @@ class ApiTests(unittest.TestCase):
             )
         self.assertEqual(status, 200)
         self.assertEqual(body, expected)
+
+    def test_extractor_prefers_audio_and_accepts_non_mp4(self):
+        completed = SimpleNamespace(
+            returncode=0,
+            stdout="https://cdn.example.test/best-video.webm\n",
+            stderr="",
+        )
+        with patch("app.subprocess.run", return_value=completed) as run:
+            result = app.extract_direct_url("https://www.youtube.com/watch?v=abc")
+
+        self.assertEqual(result, {"url": "https://cdn.example.test/best-video.webm"})
+        command = run.call_args.args[0]
+        self.assertIn("best[acodec!=none]/best", command)
+        self.assertIn("--impersonate", command)
 
     def test_url_validation(self):
         self.assertTrue(app.allowed_url("https://youtu.be/abc"))
