@@ -15,6 +15,8 @@ import threading
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse
+from urllib.request import Request as UrlRequest, urlopen
+from urllib.error import URLError, HTTPError
 
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
 LOG = logging.getLogger("melissa-downloader-api")
@@ -26,6 +28,9 @@ FRIEND_API_KEY = os.getenv("FRIEND_API_KEY", "")
 MAX_QUEUE = max(1, int(os.getenv("MAX_QUEUE", "30")))
 EXTRACT_TIMEOUT = max(10, int(os.getenv("EXTRACT_TIMEOUT", "90")))
 MAX_BODY_BYTES = 16_384
+CHUNK_SIZE = 64 * 1024
+MAX_MEDIA_BYTES = 150 * 1024 * 1024
+MEDIA_TIMEOUT = max(15, int(os.getenv("MEDIA_TIMEOUT", "120")))
 
 ALLOWED_DOMAINS = tuple(
     d.strip().lower()
@@ -191,7 +196,8 @@ def start_worker() -> None:
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "MelissaDownloader/1.0"
+    server_version = "MelissaDownloader/1.1"
+    protocol_version = "HTTP/1.1"
 
     def log_message(self, fmt: str, *args) -> None:
         LOG.info("%s - %s", self.client_address[0], fmt % args)
@@ -215,10 +221,11 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json(200, {
                 "ok": True,
                 "service": "melissa-downloader-api",
-                "message": "API online. Extrai links; o bot baixa a mídia.",
+                "message": "API online. Extrai links e transmite arquivos em blocos de 64 KiB.",
                 "endpoints": {
                     "health": "/health",
-                    "extract": {"method": "POST", "path": "/extract", "authentication": "X-API-Key", "body": {"url": "https://..."}}
+                    "extract": {"method": "POST", "path": "/extract", "authentication": "X-API-Key", "body": {"url": "https://..."}},
+                    "download": {"method": "POST", "path": "/download", "authentication": "X-API-Key", "body": {"url": "https://..."}, "stream_chunk_bytes": CHUNK_SIZE}
                 }
             })
         elif path == "/health":
@@ -233,7 +240,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         global pending_count
-        if urlparse(self.path).path.rstrip("/") != "/extract":
+        endpoint = urlparse(self.path).path.rstrip("/")
+        if endpoint not in ("/extract", "/download"):
             self.send_json(404, {"error": "not_found"})
             return
         if not OWNER_API_KEY or not FRIEND_API_KEY:
@@ -286,7 +294,106 @@ class Handler(BaseHTTPRequestHandler):
         if "error" in item:
             self.send_json(422, {"error": "extraction_failed", "message": item["error"], "request_id": item["id"]})
             return
+        if endpoint == "/download":
+            self.stream_media(item["result"])
+            return
         self.send_json(200, item["result"])
+
+
+    def stream_media(self, media: dict) -> None:
+        """Stream a direct media URL to the caller using 64 KiB chunks."""
+        media_url = media.get("url")
+        if not isinstance(media_url, str) or urlparse(media_url).scheme != "https":
+            self.send_json(502, {"error": "invalid_media_url"})
+            return
+
+        request_headers = {
+            "User-Agent": "Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36 Chrome/131.0.0.0 Mobile Safari/537.36",
+            "Accept": "video/*,audio/*,application/octet-stream;q=0.9,*/*;q=0.8",
+        }
+        allowed_headers = {"user-agent", "referer", "accept", "accept-language"}
+        for name, value in (media.get("http_headers") or {}).items():
+            if str(name).lower() in allowed_headers and isinstance(value, str) and value.strip():
+                request_headers[name] = value
+
+        response_started = False
+        try:
+            with urlopen(UrlRequest(media_url, headers=request_headers), timeout=MEDIA_TIMEOUT) as upstream:
+                content_type = (upstream.headers.get("Content-Type") or "application/octet-stream").lower()
+                if "text/html" in content_type or "application/json" in content_type:
+                    self.send_json(502, {"error": "upstream_not_media"})
+                    return
+                length_header = upstream.headers.get("Content-Length")
+                try:
+                    declared_size = int(length_header) if length_header else None
+                except ValueError:
+                    declared_size = None
+                if declared_size is not None and (declared_size < 1 or declared_size > MAX_MEDIA_BYTES):
+                    self.send_json(413 if declared_size > MAX_MEDIA_BYTES else 502, {"error": "invalid_media_size"})
+                    return
+
+                first_chunk = upstream.read(CHUNK_SIZE)
+                if not first_chunk:
+                    self.send_json(502, {"error": "empty_media"})
+                    return
+
+                ext = str(media.get("ext") or "bin").lower()
+                if not ext.isalnum() or len(ext) > 8:
+                    ext = "bin"
+                title = str(media.get("title") or "video")[:180]
+                safe_title = "".join(ch if ch.isalnum() or ch in " ._-" else "_" for ch in title).strip(" .") or "video"
+
+                self.send_response(200)
+                self.send_header("Content-Type", content_type)
+                self.send_header("X-Media-Ext", ext)
+                self.send_header("X-Media-Title", safe_title.encode("ascii", "ignore").decode("ascii") or "video")
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("X-Stream-Chunk-Size", str(CHUNK_SIZE))
+                if declared_size is not None:
+                    self.send_header("Content-Length", str(declared_size))
+                else:
+                    self.send_header("Transfer-Encoding", "chunked")
+                self.end_headers()
+                response_started = True
+
+                received = 0
+                def write_chunk(chunk: bytes) -> None:
+                    nonlocal received
+                    received += len(chunk)
+                    if received > MAX_MEDIA_BYTES:
+                        raise ValueError("media_size_limit")
+                    if declared_size is None:
+                        self.wfile.write(("%X\\r\\n" % len(chunk)).encode("ascii"))
+                        self.wfile.write(chunk)
+                        self.wfile.write(b"\\r\\n")
+                    else:
+                        self.wfile.write(chunk)
+                    self.wfile.flush()
+
+                write_chunk(first_chunk)
+                while True:
+                    chunk = upstream.read(CHUNK_SIZE)
+                    if not chunk:
+                        break
+                    write_chunk(chunk)
+                if declared_size is None:
+                    self.wfile.write(b"0\\r\\n\\r\\n")
+                    self.wfile.flush()
+                elif received != declared_size:
+                    LOG.warning("Stream ended early (expected=%s, received=%s)", declared_size, received)
+                    self.close_connection = True
+                LOG.info("Media streamed in 64 KiB blocks (%s bytes)", received)
+        except (HTTPError, URLError, TimeoutError, OSError, ValueError) as exc:
+            LOG.warning("Media stream failed: %s", str(exc)[:300])
+            if not response_started:
+                try:
+                    self.send_json(502, {"error": "media_stream_failed"})
+                except OSError:
+                    pass
+            else:
+                self.close_connection = True
+        except BrokenPipeError:
+            self.close_connection = True
 
 
 if __name__ == "__main__":
