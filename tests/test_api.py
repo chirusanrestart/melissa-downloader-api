@@ -98,6 +98,8 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(result, {"url": "https://cdn.example.test/best-video.webm"})
         command = run.call_args.args[0]
         self.assertIn("best[acodec!=none]/best", command)
+        self.assertIn("--js-runtimes", command)
+        self.assertIn("deno", command)
         self.assertIn("--impersonate", command)
 
     def test_url_validation(self):
