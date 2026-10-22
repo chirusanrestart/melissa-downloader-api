@@ -56,7 +56,7 @@ def allowed_url(value: str) -> bool:
 
 
 def extract_direct_url(url: str) -> dict:
-    """Extract one temporary progressive MP4 URL without downloading media."""
+    """Extract one direct media URL, preferring a format that includes audio."""
     command = [
         os.getenv("PYTHON", "python"),
         "-m", "yt_dlp",
@@ -68,9 +68,11 @@ def extract_direct_url(url: str) -> dict:
         "--no-write-playlist-metafiles",
         "--no-write-thumbnail",
         "--socket-timeout", "15",
-        # Prefer a single MP4 stream with audio, capped at 720p.
-        # Requiring both codecs avoids returning separate video/audio URLs.
-        "-f", "best[ext=mp4][height<=720][vcodec!=none][acodec!=none]/best[height<=720][vcodec!=none][acodec!=none]",
+        # Prefer the best single-file format that has audio, at any resolution.
+        # If no audio-containing format is available, fall back to the best
+        # single-file format anyway, even if it is silent.
+        # A single URL is required because this API does not merge streams.
+        "-f", "best[acodec!=none]/best",
         "-g",
     ]
     # Always use curl_cffi-backed impersonation by default. Set
@@ -89,9 +91,9 @@ def extract_direct_url(url: str) -> dict:
     )
     if completed.returncode != 0:
         LOG.warning("yt-dlp failed (exit=%s): %s", completed.returncode, completed.stderr[-500:])
-        raise RuntimeError("Não foi possível extrair um link MP4 com áudio até 720p.")
-    # -g prints direct media URLs only. The format selector should yield one
-    # progressive URL; reject unexpected multiple lines rather than guessing.
+        raise RuntimeError("Não foi possível extrair um link de mídia.")
+    # -g prints direct media URLs only. Return exactly one URL; do not guess
+    # if yt-dlp unexpectedly prints multiple streams.
     urls = [line.strip() for line in completed.stdout.splitlines() if line.strip()]
     if len(urls) != 1 or not urls[0].startswith(("https://", "http://")):
         raise RuntimeError("O extrator não devolveu uma única URL direta.")
