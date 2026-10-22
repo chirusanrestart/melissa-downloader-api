@@ -109,23 +109,37 @@ def extract_media_url(url: str) -> dict:
             except json.JSONDecodeError:
                 continue
 
-    # The direct media host may require the same headers yt-dlp used while
-    # extracting the URL. Return only ordinary request headers needed by the bot.
-    source_headers = metadata.get("http_headers") or {}
+    # --dump-single-json includes every available format. The selected format
+    # can carry its own headers, so prefer those over generic extractor headers.
+    selected_format_id = metadata.get("format_id")
+    formats = metadata.get("formats") or []
+    selected_format = next(
+        (fmt for fmt in formats if fmt.get("format_id") == selected_format_id),
+        {},
+    )
+    source_headers = (
+        selected_format.get("http_headers")
+        or metadata.get("http_headers")
+        or {}
+    )
     safe_header_names = {"user-agent", "referer", "accept", "accept-language"}
     media_headers = {
         str(name): str(value)
         for name, value in source_headers.items()
-        if str(name).lower() in safe_header_names and isinstance(value, (str, int, float))
+        if str(name).lower() in safe_header_names
+        and isinstance(value, (str, int, float))
     }
 
+    # Use the metadata for the selected format where available.
+    selected_ext = selected_format.get("ext") or metadata.get("ext")
+    selected_acodec = selected_format.get("acodec", metadata.get("acodec"))
     return {
         "url": direct_url,
         "title": metadata.get("title"),
-        "ext": metadata.get("ext"),
-        "format_id": metadata.get("format_id"),
-        "has_audio": metadata.get("acodec") not in (None, "none"),
-        "expires_in": metadata.get("url_expire") or None,
+        "ext": selected_ext,
+        "format_id": selected_format_id,
+        "has_audio": selected_acodec not in (None, "none"),
+        "expires_in": selected_format.get("url_expire") or metadata.get("url_expire") or None,
         "http_headers": media_headers,
     }
 
