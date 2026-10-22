@@ -363,9 +363,9 @@ class Handler(BaseHTTPRequestHandler):
                     if received > MAX_MEDIA_BYTES:
                         raise ValueError("media_size_limit")
                     if declared_size is None:
-                        self.wfile.write(("%X\\r\\n" % len(chunk)).encode("ascii"))
+                        self.wfile.write(("%X\r\n" % len(chunk)).encode("ascii"))
                         self.wfile.write(chunk)
-                        self.wfile.write(b"\\r\\n")
+                        self.wfile.write(b"\r\n")
                     else:
                         self.wfile.write(chunk)
                     self.wfile.flush()
@@ -377,7 +377,7 @@ class Handler(BaseHTTPRequestHandler):
                         break
                     write_chunk(chunk)
                 if declared_size is None:
-                    self.wfile.write(b"0\\r\\n\\r\\n")
+                    self.wfile.write(b"0\r\n\r\n")
                     self.wfile.flush()
                 elif received != declared_size:
                     LOG.warning("Stream ended early (expected=%s, received=%s)", declared_size, received)
