@@ -1,18 +1,23 @@
-"""Minimal URL extraction API for the Render free instance.
+"""Queued media downloader API for Render.
 
-The service returns direct media URLs; it does not download media files.
+Downloads media on the server and exposes a short-lived URL. This avoids
+returning YouTube's IP-bound signed media URLs to a client on another network.
 """
 from __future__ import annotations
 
+import gc
 import json
 import logging
+import mimetypes
 import os
 import queue
-import gc
 import subprocess
+import tempfile
 import threading
+import time
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from urllib.parse import urlparse
 
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
@@ -24,7 +29,11 @@ OWNER_API_KEY = os.getenv("OWNER_API_KEY", "")
 FRIEND_API_KEY = os.getenv("FRIEND_API_KEY", "")
 MAX_QUEUE = max(1, int(os.getenv("MAX_QUEUE", "30")))
 EXTRACT_TIMEOUT = max(10, int(os.getenv("EXTRACT_TIMEOUT", "90")))
+MEDIA_TTL = max(60, int(os.getenv("MEDIA_TTL", "600")))
+MAX_MEDIA_MB = max(10, int(os.getenv("MAX_MEDIA_MB", "100")))
 MAX_BODY_BYTES = 16_384
+DOWNLOAD_DIR = Path(tempfile.gettempdir()) / "melissa-downloader-media"
+DOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
 ALLOWED_DOMAINS = tuple(
     d.strip().lower()
@@ -40,6 +49,8 @@ priority_queue: queue.Queue = queue.Queue(maxsize=MAX_QUEUE)
 pending_lock = threading.Lock()
 pending_count = 0
 worker_started = False
+media_lock = threading.Lock()
+media_files: dict[str, dict] = {}
 
 
 def allowed_url(value: str) -> bool:
@@ -55,32 +66,43 @@ def allowed_url(value: str) -> bool:
         return False
 
 
-def extract_direct_url(url: str) -> dict:
-    """Extract one direct media URL, preferring a format that includes audio."""
+def cleanup_media() -> None:
+    now = time.time()
+    with media_lock:
+        expired = [token for token, entry in media_files.items() if entry["expires_at"] <= now]
+        for token in expired:
+            entry = media_files.pop(token, None)
+            if entry:
+                try:
+                    entry["path"].unlink(missing_ok=True)
+                except OSError:
+                    LOG.warning("Could not remove expired media file")
+
+
+def download_media(url: str) -> dict:
+    """Download a single WhatsApp-friendly stream and return a temporary URL."""
+    cleanup_media()
+    token = uuid.uuid4().hex
+    output_template = str(DOWNLOAD_DIR / f"{token}.%(ext)s")
     command = [
-        os.getenv("PYTHON", "python"),
-        "-m", "yt_dlp",
+        os.getenv("PYTHON", "python"), "-m", "yt_dlp",
         "--no-warnings",
         "--no-playlist",
-        "--skip-download",
         "--no-cache-dir",
         "--no-write-info-json",
         "--no-write-playlist-metafiles",
         "--no-write-thumbnail",
         "--socket-timeout", "15",
-        # YouTube JS challenge solving: enable the maintained EJS scripts.
-        # Deno is installed on Render and discovered through PATH at startup.
+        "--max-filesize", f"{MAX_MEDIA_MB}M",
+        # Match the bot's yt-dlp approach: download the media, not just a
+        # signed source URL. One-file formats avoid needing FFmpeg to merge.
+        "-f", "best[acodec!=none]/best",
+        # YouTube's current JS challenge solving support.
         "--js-runtimes", "deno",
         "--remote-components", "ejs:github",
-        # Prefer the best single-file format that has audio, at any resolution.
-        # If no audio-containing format is available, fall back to the best
-        # single-file format anyway, even if it is silent.
-        # A single URL is required because this API does not merge streams.
-        "-f", "best[acodec!=none]/best",
-        "-g",
+        "--print", "after_move:filepath",
+        "-o", output_template,
     ]
-    # Impersonation is optional. Forcing Chrome by default can introduce
-    # an unnecessary failure mode; enable it only when explicitly configured.
     impersonate = os.getenv("YTDLP_IMPERSONATE", "").strip()
     if impersonate:
         command.extend(["--impersonate", impersonate])
@@ -95,24 +117,44 @@ def extract_direct_url(url: str) -> dict:
         env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1", "PYTHONUNBUFFERED": "1"},
     )
     if completed.returncode != 0:
-        LOG.warning("yt-dlp failed (exit=%s): %s", completed.returncode, completed.stderr[-500:])
-        raise RuntimeError("Não foi possível extrair um link de mídia.")
-    # -g prints direct media URLs only. Return exactly one URL; do not guess
-    # if yt-dlp unexpectedly prints multiple streams.
-    urls = [line.strip() for line in completed.stdout.splitlines() if line.strip()]
-    if len(urls) != 1 or not urls[0].startswith(("https://", "http://")):
-        raise RuntimeError("O extrator não devolveu uma única URL direta.")
-    return {"url": urls[0]}
+        LOG.warning("yt-dlp failed (exit=%s): %s", completed.returncode, completed.stderr[-1200:])
+        raise RuntimeError("Não foi possível baixar a mídia. Consulte os logs do servidor.")
+    candidates = [line.strip() for line in completed.stdout.splitlines() if line.strip()]
+    path = Path(candidates[-1]) if candidates else None
+    if not path or not path.is_file() or not path.is_relative_to(DOWNLOAD_DIR):
+        raise RuntimeError("O yt-dlp não encontrou o arquivo baixado.")
+    size = path.stat().st_size
+    if size <= 0:
+        path.unlink(missing_ok=True)
+        raise RuntimeError("O arquivo baixado está vazio.")
+    if size > MAX_MEDIA_MB * 1024 * 1024:
+        path.unlink(missing_ok=True)
+        raise RuntimeError(f"A mídia ultrapassou o limite de {MAX_MEDIA_MB} MB.")
+
+    expires_at = time.time() + MEDIA_TTL
+    with media_lock:
+        media_files[token] = {"path": path, "expires_at": expires_at}
+    base_url = (os.getenv("PUBLIC_BASE_URL") or os.getenv("RENDER_EXTERNAL_URL") or "").rstrip("/")
+    if not base_url:
+        with media_lock:
+            media_files.pop(token, None)
+        path.unlink(missing_ok=True)
+        raise RuntimeError("Configure PUBLIC_BASE_URL com a URL pública do serviço Render.")
+    media_url = f"{base_url}/media/{token}"
+    return {
+        "url": media_url,
+        "filename": path.name,
+        "content_type": mimetypes.guess_type(path.name)[0] or "application/octet-stream",
+        "size_bytes": size,
+        "expires_in": MEDIA_TTL,
+    }
 
 
 def worker() -> None:
     global pending_count
     while True:
-        # Strict priority: drain owner work before normal work.
         item = None
         source = None
-        # Poll both queues so a newly arrived priority request can preempt
-        # normal requests that have not started yet.
         while item is None:
             try:
                 item = priority_queue.get_nowait()
@@ -123,20 +165,17 @@ def worker() -> None:
                     source = normal_queue
                 except queue.Empty:
                     continue
-
         try:
             try:
-                item["result"] = extract_direct_url(item["url"])
+                item["result"] = download_media(item["url"])
             except subprocess.TimeoutExpired:
-                item["error"] = "A extração excedeu o tempo limite."
+                item["error"] = "O download excedeu o tempo limite."
             except Exception as exc:
-                item["error"] = str(exc)[:300] or "Falha na extração."
+                item["error"] = str(exc)[:300] or "Falha no download."
             finally:
                 item["event"].set()
         finally:
             source.task_done()
-            # Reclaim cyclic garbage between jobs. Python may retain freed
-            # arenas, so this does not guarantee that process RSS immediately falls.
             gc.collect()
             with pending_lock:
                 pending_count = max(0, pending_count - 1)
@@ -145,16 +184,14 @@ def worker() -> None:
 def start_worker() -> None:
     global worker_started
     if not worker_started:
-        thread = threading.Thread(target=worker, name="extractor-worker", daemon=True)
-        thread.start()
+        threading.Thread(target=worker, name="downloader-worker", daemon=True).start()
         worker_started = True
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "MelissaExtractor/1.0"
+    server_version = "MelissaDownloader/1.0"
 
     def log_message(self, fmt: str, *args) -> None:
-        # Avoid logging URLs or credentials.
         LOG.info("%s - %s", self.client_address[0], fmt % args)
 
     def send_json(self, status: int, payload: dict) -> None:
@@ -164,17 +201,45 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
         self.end_headers()
-        # HEAD returns the same status and headers as GET, but no response body.
         if self.command != "HEAD":
             self.wfile.write(body)
 
     def do_HEAD(self) -> None:
-        # Render/proxies may probe the service with HEAD. Reuse GET routing so
-        # health checks return matching headers without transmitting JSON.
         self.do_GET()
 
     def do_GET(self) -> None:
         path = urlparse(self.path).path.rstrip("/") or "/"
+        if path.startswith("/media/"):
+            token = path.removeprefix("/media/")
+            if not token.isalnum() or len(token) != 32:
+                self.send_json(404, {"error": "media_not_found"})
+                return
+            cleanup_media()
+            with media_lock:
+                entry = media_files.get(token)
+            if not entry or not entry["path"].is_file():
+                self.send_json(404, {"error": "media_expired_or_not_found"})
+                return
+            media_path = entry["path"]
+            size = media_path.stat().st_size
+            content_type = mimetypes.guess_type(media_path.name)[0] or "application/octet-stream"
+            self.send_response(200)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(size))
+            self.send_header("Content-Disposition", f'attachment; filename="{media_path.name}"')
+            self.send_header("Cache-Control", "private, no-store")
+            self.end_headers()
+            if self.command != "HEAD":
+                try:
+                    with media_path.open("rb") as media:
+                        while True:
+                            chunk = media.read(256 * 1024)
+                            if not chunk:
+                                break
+                            self.wfile.write(chunk)
+                except (BrokenPipeError, ConnectionResetError):
+                    pass
+            return
         if path == "/":
             self.send_json(200, {
                 "ok": True,
@@ -182,12 +247,8 @@ class Handler(BaseHTTPRequestHandler):
                 "message": "Melissa Downloader API está online.",
                 "endpoints": {
                     "health": "/health",
-                    "extract": {
-                        "method": "POST",
-                        "path": "/extract",
-                        "authentication": "X-API-Key",
-                        "body": {"url": "https://..."}
-                    }
+                    "extract": {"method": "POST", "path": "/extract", "authentication": "X-API-Key", "body": {"url": "https://..."}},
+                    "media": "/media/{token} (temporary URL returned by /extract)"
                 }
             })
         elif path == "/health":
@@ -195,33 +256,29 @@ class Handler(BaseHTTPRequestHandler):
                 "ok": True,
                 "service": "melissa-downloader-api",
                 "auth_configured": bool(OWNER_API_KEY and FRIEND_API_KEY),
+                "media_cached": len(media_files),
             })
         else:
             self.send_json(404, {"error": "not_found"})
 
     def do_POST(self) -> None:
         global pending_count
-        if self.path.rstrip("/") != "/extract":
+        if urlparse(self.path).path.rstrip("/") != "/extract":
             self.send_json(404, {"error": "not_found"})
             return
-
-        # Distinguish a server setup problem from an invalid client key.
-        # Render secrets must be configured in the service Environment settings.
         if not OWNER_API_KEY or not FRIEND_API_KEY:
             self.send_json(503, {
                 "error": "server_misconfigured",
                 "message": "Configure OWNER_API_KEY and FRIEND_API_KEY in the server environment.",
             })
             return
-
         supplied = self.headers.get("X-API-Key", "")
         if not supplied or not (
-            (OWNER_API_KEY and supplied == OWNER_API_KEY)
-            or (FRIEND_API_KEY and supplied == FRIEND_API_KEY)
+            supplied == OWNER_API_KEY or supplied == FRIEND_API_KEY
         ):
             self.send_json(401, {"error": "unauthorized"})
             return
-        is_owner = bool(OWNER_API_KEY and supplied == OWNER_API_KEY)
+        is_owner = supplied == OWNER_API_KEY
 
         try:
             length = int(self.headers.get("Content-Length", "0"))
@@ -236,7 +293,6 @@ class Handler(BaseHTTPRequestHandler):
         except (json.JSONDecodeError, UnicodeDecodeError):
             self.send_json(400, {"error": "invalid_json"})
             return
-
         url = body.get("url") if isinstance(body, dict) else None
         if not allowed_url(url):
             self.send_json(400, {"error": "unsupported_or_invalid_url"})
@@ -260,7 +316,7 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json(504, {"error": "request_timeout", "request_id": item["id"]})
             return
         if "error" in item:
-            self.send_json(422, {"error": "extraction_failed", "message": item["error"], "request_id": item["id"]})
+            self.send_json(422, {"error": "download_failed", "message": item["error"], "request_id": item["id"]})
             return
         self.send_json(200, item["result"])
 
