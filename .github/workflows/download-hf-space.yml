@@ -1,50 +1,57 @@
-name: Sincronizar Space do Hugging Face para o GitHub
+name: Enviar servidor para o Hugging Face
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths-ignore:
+      - '.github/workflows/download-hf-space.yml'
 
 permissions:
-  contents: write
+  contents: read
+
+concurrency:
+  group: deploy-huggingface-space
+  cancel-in-progress: true
 
 jobs:
-  sync-space:
+  deploy:
     runs-on: ubuntu-latest
     steps:
-      - name: Baixar repositório do GitHub
+      - name: Baixar código do GitHub
         uses: actions/checkout@v4
         with:
           ref: main
+          fetch-depth: 1
 
-      - name: Instalar CLI do Hugging Face
+      - name: Validar token do Hugging Face
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
-          curl -LsSf https://hf.co/cli/install.sh | bash
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          if [ -z "$HF_TOKEN" ]; then
+            echo "::error::O segredo HF_TOKEN não está configurado nas Secrets do repositório."
+            exit 1
+          fi
 
-      - name: Baixar arquivos do Space
+      - name: Clonar repositório do Space
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
-          hf download melissanina/melissa-downloader-api \
-            --repo-type=space \
-            --local-dir /tmp/melissa-hf-space
+          git clone https://huggingface.co/spaces/melissanina/melissa-downloader-api /tmp/hf-space
+          rsync -av --delete             --exclude='.git/'             --exclude='.env'             --exclude='.env.*'             --exclude='auth/'             --exclude='secrets/'             --exclude='.cache/'             --exclude='__pycache__/'             --exclude='.pytest_cache/'             --exclude='.venv/'             --exclude='venv/'             --exclude='.github/'             ./ /tmp/hf-space/
 
-      - name: Copiar código para o repositório
-        run: |
-          rsync -av /tmp/melissa-hf-space/ ./ \
-            --exclude='.git/' \
-            --exclude='.env' \
-            --exclude='.env.*' \
-            --exclude='auth/' \
-            --exclude='secrets/' \
-            --exclude='.cache/' \
-            --exclude='.github/workflows/download-hf-space.yml'
-
-      - name: Salvar alterações no GitHub
+      - name: Commit e enviar para o Hugging Face
+        working-directory: /tmp/hf-space
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -A
           if git diff --cached --quiet; then
-            echo "Nenhuma alteração para enviar."
-          else
-            git commit -m "Sincroniza código do Hugging Face Space"
-            git push origin HEAD:main
+            echo "Nenhuma alteração para enviar ao Space."
+            exit 0
           fi
+          git commit -m "Deploy from GitHub Actions"
+          git -c http.extraheader="AUTHORIZATION: Bearer $HF_TOKEN" push origin HEAD:main
