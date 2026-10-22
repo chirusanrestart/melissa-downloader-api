@@ -159,7 +159,14 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
         self.end_headers()
-        self.wfile.write(body)
+        # HEAD returns the same status and headers as GET, but no response body.
+        if self.command != "HEAD":
+            self.wfile.write(body)
+
+    def do_HEAD(self) -> None:
+        # Render/proxies may probe the service with HEAD. Reuse GET routing so
+        # health checks return matching headers without transmitting JSON.
+        self.do_GET()
 
     def do_GET(self) -> None:
         path = urlparse(self.path).path.rstrip("/") or "/"
