@@ -3,7 +3,8 @@ title: Melissa Downloader API
 emoji: 🐢
 colorFrom: purple
 colorTo: blue
-sdk: static
+sdk: docker
+app_port: 7860
 pinned: false
 short_description: API para extrair links diretos de mídia
 ---
