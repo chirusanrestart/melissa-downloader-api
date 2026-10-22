@@ -68,6 +68,8 @@ def extract_direct_url(url: str) -> dict:
         "--no-write-playlist-metafiles",
         "--no-write-thumbnail",
         "--socket-timeout", "15",
+        # YouTube JavaScript challenge solving through the Deno runtime.
+        "--js-runtimes", "deno",
         # Prefer the best single-file format that has audio, at any resolution.
         # If no audio-containing format is available, fall back to the best
         # single-file format anyway, even if it is silent.
