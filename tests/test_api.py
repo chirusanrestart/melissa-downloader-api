@@ -47,6 +47,14 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertTrue(body["ok"])
 
+    def test_head_health_returns_headers_without_body(self):
+        req = Request(self.base + "/health", method="HEAD")
+        with urlopen(req, timeout=5) as response:
+            self.assertEqual(response.status, 200)
+            self.assertEqual(response.headers.get_content_type(), "application/json")
+            self.assertGreater(int(response.headers["Content-Length"]), 0)
+            self.assertEqual(response.read(), b"")
+
     def test_reports_missing_server_key_configuration(self):
         with patch.object(app, "OWNER_API_KEY", ""), patch.object(app, "FRIEND_API_KEY", ""):
             status, body = self.request(
