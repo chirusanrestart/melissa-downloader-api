@@ -109,6 +109,16 @@ def extract_media_url(url: str) -> dict:
             except json.JSONDecodeError:
                 continue
 
+    # The direct media host may require the same headers yt-dlp used while
+    # extracting the URL. Return only ordinary request headers needed by the bot.
+    source_headers = metadata.get("http_headers") or {}
+    safe_header_names = {"user-agent", "referer", "accept", "accept-language"}
+    media_headers = {
+        str(name): str(value)
+        for name, value in source_headers.items()
+        if str(name).lower() in safe_header_names and isinstance(value, (str, int, float))
+    }
+
     return {
         "url": direct_url,
         "title": metadata.get("title"),
@@ -116,6 +126,7 @@ def extract_media_url(url: str) -> dict:
         "format_id": metadata.get("format_id"),
         "has_audio": metadata.get("acodec") not in (None, "none"),
         "expires_in": metadata.get("url_expire") or None,
+        "http_headers": media_headers,
     }
 
 
