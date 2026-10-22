@@ -130,6 +130,14 @@ def extract_media_url(url: str) -> dict:
         and isinstance(value, (str, int, float))
     }
 
+    # Direct CDN URLs may require the platform's canonical page as Referer,
+    # especially when the original input is a short redirect URL.
+    source_host = (urlparse(url).hostname or "").lower()
+    if source_host.endswith("tiktok.com") or source_host.endswith("tiktokv.com"):
+        media_headers["Referer"] = "https://www.tiktok.com/"
+    elif source_host.endswith("instagram.com") or source_host.endswith("instagr.am"):
+        media_headers["Referer"] = "https://www.instagram.com/"
+
     # Use the metadata for the selected format where available.
     selected_ext = selected_format.get("ext") or metadata.get("ext")
     selected_acodec = selected_format.get("acodec", metadata.get("acodec"))
