@@ -1,0 +1,34 @@
+name: Baixar Space do Hugging Face
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  download-space:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Instalar CLI do Hugging Face
+        run: |
+          curl -LsSf https://hf.co/cli/install.sh | bash
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Baixar arquivos do Space
+        run: |
+          hf download melissanina/melissa-downloader-api \
+            --repo-type=space \
+            --local-dir ./melissa-downloader-api
+
+      - name: Criar ZIP temporário
+        run: |
+          zip -r melissa-downloader-api.zip melissa-downloader-api \
+            -x '*/.git/*' '*/.env' '*/auth/*' '*/secrets/*'
+
+      - name: Disponibilizar ZIP para download
+        uses: actions/upload-artifact@v4
+        with:
+          name: melissa-downloader-api
+          path: melissa-downloader-api.zip
+          retention-days: 1
