@@ -75,7 +75,7 @@ def extract_media_url(url: str) -> dict:
     # may not exist in the server's yt-dlp build.
     impersonate = os.getenv("YTDLP_IMPERSONATE", "").strip()
     if impersonate:
-        command[1:1] = ["--impersonate", impersonate]
+        command[3:3] = ["--impersonate", impersonate]
 
     completed = subprocess.run(
         command,
