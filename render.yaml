@@ -3,8 +3,8 @@ services:
     name: melissa-downloader-api
     runtime: python
     plan: free
-    buildCommand: pip install --no-cache-dir -r requirements.txt
-    startCommand: python app.py
+    buildCommand: 'curl -fsSL https://deno.land/install.sh | DENO_INSTALL="$PWD/.deno" sh && pip install --no-cache-dir -r requirements.txt'
+    startCommand: 'PATH="$PWD/.deno/bin:$PATH" python app.py'
     healthCheckPath: /health
     envVars:
       - key: PYTHON_VERSION
