@@ -13,7 +13,11 @@ Example:
 python -c 'import json,urllib.request; req=urllib.request.Request("http://localhost:10000/extract", data=json.dumps({"url":"https://www.youtube.com/watch?v=BaW_jenozKc"}).encode(), headers={"Content-Type":"application/json","X-API-Key":"YOUR_KEY"}); print(urllib.request.urlopen(req, timeout=120).read().decode())'
 ```
 
-Success response contains `ok`, `url` (direct media URL), `title`, `extractor`, and `request_id`. Errors use JSON and an appropriate HTTP status.
+Success response contains a direct media URL in `url`. Errors use JSON and an appropriate HTTP status.
+
+## Format selection
+
+The API asks yt-dlp for the best single-file format that includes audio, at any available resolution. If no single-file format with audio is available, it falls back to the best single-file format even if that format has no audio. This keeps the response to one direct URL. It does not combine separate adaptive video and audio streams, and the selected container may be MP4, WebM, or another format supported by the source.
 
 ## Authorization and priority
 
@@ -60,7 +64,7 @@ On Render, open **Dashboard → your service → Environment** and set both vari
 - `OWNER_API_KEY`: owner key, which receives priority.
 - `FRIEND_API_KEY`: friends key, which uses the normal queue.
 
-Save changes and wait for the service to redeploy. These values are intentionally not stored in GitHub. If either variable is missing, `/extract` now returns HTTP `503` with `server_misconfigured`; if the variables exist but the submitted key does not match, it returns HTTP `401` with `unauthorized`. Check `/health` for `auth_configured`. `render.yaml` contains the service blueprint.
+Save changes and wait for the service to redeploy. These values are intentionally not stored in GitHub. If either variable is missing, `/extract` returns HTTP `503` with `server_misconfigured`; if the variables exist but the submitted key does not match, it returns HTTP `401` with `unauthorized`. Check `/health` for `auth_configured`. `render.yaml` contains the service blueprint.
 
 ## Tests
 
