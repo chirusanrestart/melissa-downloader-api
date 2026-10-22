@@ -1,15 +1,20 @@
-name: Baixar Space do Hugging Face
+name: Sincronizar Space do Hugging Face para o GitHub
 
 on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
-  download-space:
+  sync-space:
     runs-on: ubuntu-latest
     steps:
+      - name: Baixar repositório do GitHub
+        uses: actions/checkout@v4
+        with:
+          ref: main
+
       - name: Instalar CLI do Hugging Face
         run: |
           curl -LsSf https://hf.co/cli/install.sh | bash
@@ -19,16 +24,27 @@ jobs:
         run: |
           hf download melissanina/melissa-downloader-api \
             --repo-type=space \
-            --local-dir ./melissa-downloader-api
+            --local-dir /tmp/melissa-hf-space
 
-      - name: Criar ZIP temporário
+      - name: Copiar código para o repositório
         run: |
-          zip -r melissa-downloader-api.zip melissa-downloader-api \
-            -x '*/.git/*' '*/.env' '*/auth/*' '*/secrets/*'
+          rsync -av /tmp/melissa-hf-space/ ./ \
+            --exclude='.git/' \
+            --exclude='.env' \
+            --exclude='.env.*' \
+            --exclude='auth/' \
+            --exclude='secrets/' \
+            --exclude='.cache/' \
+            --exclude='.github/workflows/download-hf-space.yml'
 
-      - name: Disponibilizar ZIP para download
-        uses: actions/upload-artifact@v4
-        with:
-          name: melissa-downloader-api
-          path: melissa-downloader-api.zip
-          retention-days: 1
+      - name: Salvar alterações no GitHub
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          if git diff --cached --quiet; then
+            echo "Nenhuma alteração para enviar."
+          else
+            git commit -m "Sincroniza código do Hugging Face Space"
+            git push origin HEAD:main
+          fi
