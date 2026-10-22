@@ -54,4 +54,5 @@ jobs:
             exit 0
           fi
           git commit -m "Deploy from GitHub Actions"
-          git -c http.extraheader="AUTHORIZATION: Bearer $HF_TOKEN" push origin HEAD:main
+          git remote set-url origin "https://user:$HF_TOKEN@huggingface.co/spaces/melissanina/melissa-downloader-api"
+          git push origin HEAD:main
