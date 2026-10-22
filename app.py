@@ -68,8 +68,10 @@ def extract_direct_url(url: str) -> dict:
         "--no-write-playlist-metafiles",
         "--no-write-thumbnail",
         "--socket-timeout", "15",
-        # YouTube JavaScript challenge solving through the Deno runtime.
+        # YouTube JS challenge solving: enable the maintained EJS scripts.
+        # Deno is installed on Render and discovered through PATH at startup.
         "--js-runtimes", "deno",
+        "--remote-components", "ejs:github",
         # Prefer the best single-file format that has audio, at any resolution.
         # If no audio-containing format is available, fall back to the best
         # single-file format anyway, even if it is silent.
@@ -77,10 +79,11 @@ def extract_direct_url(url: str) -> dict:
         "-f", "best[acodec!=none]/best",
         "-g",
     ]
-    # Always use curl_cffi-backed impersonation by default. Set
-    # YTDLP_IMPERSONATE to a supported target to override "chrome".
-    impersonate = os.getenv("YTDLP_IMPERSONATE", "chrome").strip() or "chrome"
-    command.extend(["--impersonate", impersonate])
+    # Impersonation is optional. Forcing Chrome by default can introduce
+    # an unnecessary failure mode; enable it only when explicitly configured.
+    impersonate = os.getenv("YTDLP_IMPERSONATE", "").strip()
+    if impersonate:
+        command.extend(["--impersonate", impersonate])
     command.append(url)
 
     completed = subprocess.run(
