@@ -49,6 +49,7 @@ worker_started = False
 
 
 def allowed_url(value: str) -> bool:
+    """Validate URL shape and reject obvious local targets; yt-dlp decides support."""
     if not isinstance(value, str) or len(value) > 4096:
         return False
     try:
@@ -56,7 +57,21 @@ def allowed_url(value: str) -> bool:
         host = (parsed.hostname or "").lower().rstrip(".")
         if parsed.scheme != "https" or not host or parsed.username or parsed.password:
             return False
-        return any(host == domain or host.endswith("." + domain) for domain in ALLOWED_DOMAINS)
+
+        # Keep the extractor from being used to target local/private services.
+        if host == "localhost" or host.endswith(".localhost") or host.endswith(".local"):
+            return False
+        try:
+            import ipaddress
+            address = ipaddress.ip_address(host)
+            if not address.is_global:
+                return False
+        except ValueError:
+            # Host is a DNS name. The domain allowlist is intentionally removed:
+            # yt-dlp's extractors determine whether the URL can be handled.
+            pass
+
+        return True
     except (ValueError, UnicodeError):
         return False
 
