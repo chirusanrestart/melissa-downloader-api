@@ -11,6 +11,7 @@ import logging
 import os
 import queue
 import subprocess
+import socket
 import threading
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -46,6 +47,22 @@ priority_queue: queue.Queue = queue.Queue(maxsize=MAX_QUEUE)
 pending_lock = threading.Lock()
 pending_count = 0
 worker_started = False
+
+
+class StreamingHTTPServer(ThreadingHTTPServer):
+    # Allow concurrent clients and avoid Nagle delays for small stream writes.
+    request_queue_size = 64
+    daemon_threads = True
+    allow_reuse_address = True
+
+    def get_request(self):
+        request, client_address = super().get_request()
+        try:
+            request.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+            request.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+        except OSError:
+            pass
+        return request, client_address
 
 
 def allowed_url(value: str) -> bool:
@@ -363,6 +380,8 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_header("X-Media-Ext", ext)
                 self.send_header("X-Media-Title", safe_title.encode("ascii", "ignore").decode("ascii") or "video")
                 self.send_header("Cache-Control", "no-store")
+                self.send_header("X-Accel-Buffering", "no")
+                self.send_header("X-Content-Type-Options", "nosniff")
                 self.send_header("X-Stream-Chunk-Size", str(CHUNK_SIZE))
                 if declared_size is not None:
                     self.send_header("Content-Length", str(declared_size))
@@ -428,4 +447,4 @@ class Handler(BaseHTTPRequestHandler):
 
 if __name__ == "__main__":
     start_worker()
-    ThreadingHTTPServer((HOST, PORT), Handler).serve_forever()
+    StreamingHTTPServer((HOST, PORT), Handler).serve_forever()
