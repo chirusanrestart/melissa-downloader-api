@@ -327,8 +327,53 @@ def open_media_stream(media: dict):
 
 @app.post("/download")
 async def download(payload: URLRequest, x_api_key: str = Header(default="", alias="X-API-Key")):
+    # Validate the key and URL using the existing prioritized extraction queue.
     media = await enqueue_extraction(payload.url, x_api_key)
-    upstream, content_type, declared_size, first_chunk = await asyncio.to_thread(open_media_stream, media)
+
+    # Download through yt-dlp itself instead of opening its temporary direct URL
+    # with urllib. This preserves extractor-specific headers and reduces 403s
+    # caused by expiring or session-bound media URLs.
+    command = [
+        os.getenv("PYTHON", "python"), "-m", "yt_dlp",
+        "--no-warnings", "--no-playlist", "--no-cache-dir",
+        "--socket-timeout", "15",
+        "--js-runtimes", "deno",
+        "--remote-components", "ejs:github",
+        "--format", "best[acodec!=none]/best",
+        "--output", "-", payload.url,
+    ]
+    impersonate = os.getenv("YTDLP_IMPERSONATE", "").strip()
+    if impersonate:
+        command[3:3] = ["--impersonate", impersonate]
+
+    try:
+        process = subprocess.Popen(
+            command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1", "PYTHONUNBUFFERED": "1"},
+        )
+        first_chunk = await asyncio.wait_for(
+            asyncio.to_thread(process.stdout.read, CHUNK_SIZE), timeout=MEDIA_TIMEOUT
+        )
+        if not first_chunk:
+            process.stdout.close()
+            process.kill()
+            await asyncio.to_thread(process.wait)
+            raise HTTPException(status_code=502, detail={
+                "error": "media_stream_failed",
+                "reason": "yt-dlp did not produce media bytes; the source may deny access."
+            })
+    except asyncio.TimeoutError as exc:
+        if "process" in locals() and process.poll() is None:
+            process.kill()
+            await asyncio.to_thread(process.wait)
+        raise HTTPException(status_code=504, detail={"error": "media_stream_timeout"}) from exc
+    except HTTPException:
+        raise
+    except OSError as exc:
+        raise HTTPException(status_code=502, detail={
+            "error": "media_stream_failed", "reason": str(exc)[:200]
+        }) from exc
 
     ext = str(media.get("ext") or "bin").lower()
     if not ext.isalnum() or len(ext) > 8:
@@ -342,34 +387,39 @@ async def download(payload: URLRequest, x_api_key: str = Header(default="", alia
         "X-Content-Type-Options": "nosniff",
         "X-Stream-Chunk-Size": str(CHUNK_SIZE),
     }
-    if declared_size is not None:
-        headers["Content-Length"] = str(declared_size)
 
     def stream():
         received = 0
         try:
             received += len(first_chunk)
-            if received > MAX_MEDIA_BYTES:
-                return
             yield first_chunk
             while True:
-                chunk = upstream.read(CHUNK_SIZE)
+                chunk = process.stdout.read(CHUNK_SIZE)
                 if not chunk:
                     break
                 received += len(chunk)
                 if received > MAX_MEDIA_BYTES:
                     LOG.warning("Media stream exceeded %s bytes; terminating", MAX_MEDIA_BYTES)
+                    process.kill()
                     break
                 yield chunk
-            if declared_size is not None and received != declared_size:
-                LOG.warning("Stream ended early (expected=%s, received=%s)", declared_size, received)
-            LOG.info("Media streamed in 64 KiB blocks (%s bytes)", received)
-        except (HTTPError, URLError, TimeoutError, OSError) as exc:
+            return_code = process.wait()
+            if return_code != 0:
+                LOG.warning("yt-dlp download process exited with code %s after %s bytes", return_code, received)
+            else:
+                LOG.info("Media streamed via yt-dlp in 64 KiB blocks (%s bytes)", received)
+        except (OSError, TimeoutError) as exc:
             LOG.warning("Media stream interrupted: %s", str(exc)[:240])
+            if process.poll() is None:
+                process.kill()
         finally:
-            upstream.close()
+            if process.stdout:
+                process.stdout.close()
+            if process.poll() is None:
+                process.kill()
+            process.wait()
 
-    return StreamingResponse(stream(), media_type=content_type, headers=headers)
+    return StreamingResponse(stream(), media_type="application/octet-stream", headers=headers)
 
 
 if __name__ == "__main__":
