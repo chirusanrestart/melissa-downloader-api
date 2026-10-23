@@ -4,7 +4,7 @@ services:
     runtime: python
     plan: free
     buildCommand: 'curl -fsSL https://deno.land/install.sh | DENO_INSTALL="$PWD/.deno" sh && pip install --no-cache-dir -r requirements.txt'
-    startCommand: 'PATH="$PWD/.deno/bin:$PATH" python app.py'
+    startCommand: 'PATH="$PWD/.deno/bin:$PATH" uvicorn app:app --host 0.0.0.0 --port "$PORT"'
     healthCheckPath: /health
     envVars:
       - key: PYTHON_VERSION
