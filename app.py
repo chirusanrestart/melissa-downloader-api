@@ -399,15 +399,30 @@ class Handler(BaseHTTPRequestHandler):
                     self.close_connection = True
                 LOG.info("Media streamed in 64 KiB blocks (%s bytes)", received)
         except (HTTPError, URLError, TimeoutError, OSError, ValueError) as exc:
-            LOG.warning("Media stream failed: %s", str(exc)[:300])
+            reason = str(exc)[:240] or type(exc).__name__
+            if isinstance(exc, HTTPError):
+                error_code = "upstream_http_" + str(exc.code)
+            elif isinstance(exc, URLError):
+                error_code = "upstream_connection_failed"
+            elif isinstance(exc, TimeoutError):
+                error_code = "upstream_timeout"
+            elif isinstance(exc, ValueError) and str(exc) == "media_size_limit":
+                error_code = "media_size_limit"
+            else:
+                error_code = "stream_io_error"
+            LOG.warning("Media stream failed (%s): %s", error_code, reason)
             if not response_started:
                 try:
-                    self.send_json(502, {"error": "media_stream_failed"})
+                    self.send_json(502, {
+                        "error": "media_stream_failed",
+                        "reason": error_code + ": " + reason,
+                    })
                 except OSError:
                     pass
             else:
                 self.close_connection = True
         except BrokenPipeError:
+            LOG.info("Client disconnected during media stream")
             self.close_connection = True
 
 
