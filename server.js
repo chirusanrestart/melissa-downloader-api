@@ -304,8 +304,8 @@ async function streamViaVideoScale(videoUrl, res, mode) {
       "-hide_banner", "-loglevel", "error",
       "-i", parsedMediaUrl.toString(),
       "-map", "0:a:0", "-vn",
-      "-codec:a", "libmp3lame", "-b:a", "128k",
-      "-f", "mp3", "pipe:1"
+      "-codec:a", "aac", "-b:a", "128k",
+      "-f", "ipod", "-movflags", "+frag_keyframe+empty_moov", "pipe:1"
     ], { stdio: ["ignore", "pipe", "pipe"] });
     let ffmpegError = "";
     let gotOutput = false;
@@ -320,8 +320,8 @@ async function streamViaVideoScale(videoUrl, res, mode) {
       if (res.destroyed) return;
       gotOutput = true;
       res.writeHead(200, {
-        "content-type": "audio/mpeg",
-        "content-disposition": 'attachment; filename="audio.mp3"',
+        "content-type": "audio/mp4",
+        "content-disposition": 'attachment; filename="audio.m4a"',
         "cache-control": "no-store",
         "x-content-type-options": "nosniff"
       });
@@ -369,15 +369,13 @@ async function streamViaVideoScale(videoUrl, res, mode) {
 
 function streamYouTube(videoUrl, req, res, mode = "video") {
   const isAudio = mode === "audio";
-  // Aceita qualquer formato de áudio disponível (M4A, WebM/Opus etc.).
-  // O formato é mantido original, sem exigir conversão com FFmpeg.
+  // Para áudio, prioriza M4A nativo do YouTube, sem renomear WebM/Opus como M4A.
+  // Se não houver M4A disponível, o yt-dlp falha e o fallback VideoScale + FFmpeg converte.
   const outputFormat = isAudio
-    ? "bestaudio[acodec!=none]/bestaudio"
+    ? "bestaudio[ext=m4a]"
     : "best[ext=mp4][vcodec!=none][acodec!=none]";
-  // Como a extensão de áudio pode variar, usa tipo genérico para não mentir
-  // ao cliente sobre o contêiner real recebido.
-  const outputType = isAudio ? "application/octet-stream" : "video/mp4";
-  const outputName = isAudio ? "audio.bin" : "video.mp4";
+  const outputType = isAudio ? "audio/mp4" : "video/mp4";
+  const outputName = isAudio ? "audio.m4a" : "video.mp4";
   const args = [
     "--no-playlist",
     "--no-warnings",
