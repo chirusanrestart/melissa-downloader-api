@@ -148,11 +148,15 @@ async function streamTikTok(payload, req, res) {
 
 function streamYouTube(videoUrl, req, res, mode = "video") {
   const isAudio = mode === "audio";
+  // Aceita qualquer formato de áudio disponível (M4A, WebM/Opus etc.).
+  // O formato é mantido original, sem exigir conversão com FFmpeg.
   const outputFormat = isAudio
-    ? "bestaudio[ext=m4a]"
+    ? "bestaudio[acodec!=none]/bestaudio"
     : "best[ext=mp4][vcodec!=none][acodec!=none]";
-  const outputType = isAudio ? "audio/mp4" : "video/mp4";
-  const outputName = isAudio ? "audio.m4a" : "video.mp4";
+  // Como a extensão de áudio pode variar, usa tipo genérico para não mentir
+  // ao cliente sobre o contêiner real recebido.
+  const outputType = isAudio ? "application/octet-stream" : "video/mp4";
+  const outputName = isAudio ? "audio.bin" : "video.mp4";
   const args = [
     "--no-playlist",
     "--no-warnings",
