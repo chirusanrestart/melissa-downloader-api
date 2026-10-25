@@ -396,7 +396,9 @@ function streamYouTube(videoUrl, req, res, mode = "video", platform = "youtube")
     "--no-progress",
     "--js-runtimes", "node",
     "--remote-components", "ejs:github",
-    ...(isInstagram ? ["--impersonate", "chrome", "--extractor-retries", "2"] : []),
+    ...(isInstagram
+      ? ["--impersonate", "chrome", "--extractor-retries", "2"]
+      : ["--impersonate", "chrome"]),
     "-f", outputFormat,
     "-o", "-",
     "--",
