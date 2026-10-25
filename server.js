@@ -229,15 +229,16 @@ function chooseVideoScaleFormat(payload, mode) {
     const video = codec(item, ["vcodec", "video_codec", "videoCodec"]);
     return video && video !== "none" && audio && audio !== "none";
   });
+  const videoFormats = formats.filter(item => {
+    const video = codec(item, ["vcodec", "video_codec", "videoCodec"]);
+    const type = String(item.type ?? item.format_type ?? "").toLowerCase();
+    return (video && video !== "none" && type !== "audio") ||
+      (type.includes("video") && !type.includes("only"));
+  });
+  // No fallback de áudio, baixar vídeo com áudio embutido na menor resolução disponível.
   const candidates = mode === "audio"
-    ? (audioFormats.length ? audioFormats : formats.filter(item => {
-        const type = String(item.type ?? item.format_type ?? "").toLowerCase();
-        return type.includes("audio") || item.audio_only === true || item.audioOnly === true;
-      }))
-    : (combinedFormats.length ? combinedFormats : formats.filter(item => {
-        const type = String(item.type ?? item.format_type ?? "").toLowerCase();
-        return type.includes("video") && !type.includes("only");
-      }));
+    ? (combinedFormats.length ? combinedFormats : (videoFormats.length ? videoFormats : audioFormats))
+    : (combinedFormats.length ? combinedFormats : videoFormats);
   if (!candidates.length) throw new Error(`VideoScale não retornou formato adequado para ${mode}`);
 
   candidates.sort((a, b) => {
@@ -245,8 +246,11 @@ function chooseVideoScaleFormat(payload, mode) {
     const bExt = String(b.ext ?? b.extension ?? "").toLowerCase();
     const aHeight = Number(a.height ?? String(a.resolution ?? "").match(/(\\d+)p/)?.[1] ?? 0);
     const bHeight = Number(b.height ?? String(b.resolution ?? "").match(/(\\d+)p/)?.[1] ?? 0);
-    const aScore = (mode === "audio" ? (aExt === "m4a" ? 20 : aExt === "webm" ? 10 : 0) : (aExt === "mp4" ? 20 : 0)) + aHeight / 10000;
-    const bScore = (mode === "audio" ? (bExt === "m4a" ? 20 : bExt === "webm" ? 10 : 0) : (bExt === "mp4" ? 20 : 0)) + bHeight / 10000;
+    if (mode === "audio") {
+      return (aHeight || Number.MAX_SAFE_INTEGER) - (bHeight || Number.MAX_SAFE_INTEGER);
+    }
+    const aScore = (aExt === "mp4" ? 20 : 0) + aHeight / 10000;
+    const bScore = (bExt === "mp4" ? 20 : 0) + bHeight / 10000;
     return bScore - aScore;
   });
   return formatId(candidates[0]);
@@ -295,6 +299,57 @@ async function streamViaVideoScale(videoUrl, res, mode) {
   const parsedMediaUrl = new URL(mediaUrl);
   if (parsedMediaUrl.protocol !== "https:") throw new Error("VideoScale retornou uma URL de mídia não segura");
 
+  if (mode === "audio") {
+    const ffmpeg = spawn(process.env.FFMPEG_PATH || "ffmpeg", [
+      "-hide_banner", "-loglevel", "error",
+      "-i", parsedMediaUrl.toString(),
+      "-map", "0:a:0", "-vn",
+      "-codec:a", "libmp3lame", "-b:a", "96k",
+      "-f", "mp3", "pipe:1"
+    ], { stdio: ["ignore", "pipe", "pipe"] });
+    let ffmpegError = "";
+    let gotOutput = false;
+    const timeout = setTimeout(() => ffmpeg.kill("SIGTERM"), 180_000);
+    timeout.unref();
+    ffmpeg.stderr.setEncoding("utf8");
+    ffmpeg.stderr.on("data", chunk => { ffmpegError = (ffmpegError + chunk).slice(-2000); });
+    res.on("close", () => {
+      if (!res.writableEnded && ffmpeg.exitCode === null) ffmpeg.kill("SIGTERM");
+    });
+    ffmpeg.stdout.once("data", firstChunk => {
+      if (res.destroyed) return;
+      gotOutput = true;
+      res.writeHead(200, {
+        "content-type": "audio/mpeg",
+        "content-disposition": 'attachment; filename="audio.mp3"',
+        "cache-control": "no-store",
+        "x-content-type-options": "nosniff"
+      });
+      if (!res.write(firstChunk)) ffmpeg.stdout.pause();
+      ffmpeg.stdout.pipe(res);
+    });
+    ffmpeg.once("error", err => {
+      clearTimeout(timeout);
+      console.error("Não foi possível iniciar FFmpeg:", err.message);
+      if (!res.headersSent && !res.destroyed) sendJson(res, 503, { error: "FFmpeg não está instalado ou não pôde ser iniciado" });
+      else if (!res.destroyed) res.destroy(err);
+    });
+    ffmpeg.once("close", (code, signal) => {
+      clearTimeout(timeout);
+      if (res.destroyed) return;
+      if (code === 0 && gotOutput) {
+        if (!res.writableEnded) res.end();
+        console.log("VideoScale fallback concluído", { mode, extractor: "ffmpeg" });
+        return;
+      }
+      const message = `FFmpeg falhou (código ${code}, sinal ${signal || "nenhum"}): ${ffmpegError.slice(-800)}`;
+      console.error(message);
+      if (!res.headersSent) sendJson(res, 502, { error: message });
+      else if (!res.destroyed) res.destroy(new Error(message));
+    });
+    return;
+  }
+
   const mediaResponse = await fetch(parsedMediaUrl, {
     headers: { "user-agent": "MelissaDownloaderAPI/3.0" },
     signal: AbortSignal.timeout(60_000)
@@ -302,12 +357,9 @@ async function streamViaVideoScale(videoUrl, res, mode) {
   if (!mediaResponse.ok || !mediaResponse.body) {
     throw new Error(`Não foi possível obter a mídia do VideoScale (HTTP ${mediaResponse.status})`);
   }
-
   res.writeHead(200, {
-    "content-type": mode === "audio"
-      ? (mediaResponse.headers.get("content-type") || "application/octet-stream")
-      : (mediaResponse.headers.get("content-type") || "video/mp4"),
-    "content-disposition": `attachment; filename="${mode === "audio" ? "audio.bin" : "video.mp4"}"`,
+    "content-type": mediaResponse.headers.get("content-type") || "video/mp4",
+    "content-disposition": 'attachment; filename="video.mp4"',
     "cache-control": "no-store",
     "x-content-type-options": "nosniff"
   });
