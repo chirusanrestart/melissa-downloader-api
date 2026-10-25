@@ -7,16 +7,22 @@ def main():
     request = json.load(sys.stdin)
     query = str(request.get("query", "")).strip()[:200]
     max_results = max(1, min(60, int(request.get("max", 20))))
+
     if not query:
         raise ValueError("A consulta de pesquisa está vazia")
 
+    # ApiScraper.search exige min_resolution; (0, 0) não filtra por tamanho.
     media = PinterestDL.with_api(timeout=10, verbose=False).search(
         query=query,
         num=max_results,
-        min_resolution=None,
+        min_resolution=(0, 0),
         delay=0.4,
     )
-    print(json.dumps([item.to_dict() for item in media], ensure_ascii=False))
+
+    print(json.dumps(
+        [item.to_dict() for item in media[:max_results]],
+        ensure_ascii=False
+    ))
 
 
 if __name__ == "__main__":
