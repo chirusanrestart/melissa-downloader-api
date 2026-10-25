@@ -1,19 +1,11 @@
 services:
   - type: web
     name: melissa-downloader-api
-    runtime: python
+    runtime: node
     plan: free
-    buildCommand: 'curl -fsSL https://deno.land/install.sh | DENO_INSTALL="$PWD/.deno" sh && pip install --no-cache-dir -r requirements.txt'
-    startCommand: 'PATH="$PWD/.deno/bin:$PATH" uvicorn app:app --host 0.0.0.0 --port "$PORT"'
+    buildCommand: 'npm install --omit=dev'
+    startCommand: 'npm start'
     healthCheckPath: /health
     envVars:
-      - key: PYTHON_VERSION
-        value: 3.11.11
-      - key: MAX_QUEUE
-        value: 30
-      - key: EXTRACT_TIMEOUT
-        value: 90
-      - key: OWNER_API_KEY
-        sync: false
-      - key: FRIEND_API_KEY
+      - key: API_KEY
         sync: false
