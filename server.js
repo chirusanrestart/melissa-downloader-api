@@ -199,6 +199,18 @@ function findDeepString(value, keys, depth = 0) {
   return "";
 }
 
+function findDeepStringChildFirst(value, keys, depth = 0) {
+  if (!value || typeof value !== "object" || depth > 8) return "";
+  for (const item of Array.isArray(value) ? value : Object.values(value)) {
+    const found = findDeepStringChildFirst(item, keys, depth + 1);
+    if (found) return found;
+  }
+  for (const key of keys) {
+    if (typeof value[key] === "string" && value[key]) return value[key];
+  }
+  return "";
+}
+
 function chooseVideoScaleFormat(payload, mode) {
   const formats = findDeepObjects(payload, item =>
     item.format_id !== undefined || item.formatId !== undefined || item.formatID !== undefined
@@ -264,7 +276,7 @@ async function streamViaVideoScale(videoUrl, res, mode) {
       `${VIDEOSCALE_BASE_URL}/api/status/${encodeURIComponent(taskId)}`,
       { method: "GET" }
     );
-    taskStatus = findDeepString(statusPayload, ["status", "state"]).toLowerCase();
+    taskStatus = findDeepStringChildFirst(statusPayload, ["status", "state"]).toLowerCase();
     if (["completed", "complete", "success", "succeeded", "done", "finished"].includes(taskStatus)) break;
     if (["failed", "error", "cancelled", "canceled"].includes(taskStatus)) {
       throw new Error(`Tarefa VideoScale falhou: ${taskStatus}`);
