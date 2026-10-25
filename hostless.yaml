@@ -8,7 +8,7 @@ build:
 dockerfile_path: ./Dockerfile
 working_directory: /
 post_build_command: ""
-start_command: node server.js
+start_command: npm start
 scaling:
   trigger: http_requests
   min_cpu: 0.01
