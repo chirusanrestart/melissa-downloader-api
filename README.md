@@ -1,11 +1,11 @@
 # Melissa Downloader API 🐢
 
-API HTTP em Node.js nativo, sem Express e sem dependências npm externas. Suporta vídeos do TikTok via TikWM e vídeos do YouTube via `yt-dlp`, transmitindo o conteúdo diretamente ao cliente sem salvar o vídeo inteiro em disco ou na memória.
+API HTTP em Node.js nativo, sem Express e sem dependências npm externas. Suporta vídeos do TikTok via TikWM e vídeos do YouTube e Instagram via `yt-dlp` com `curl_cffi` para impersonação de navegador no Instagram, transmitindo o conteúdo diretamente ao cliente sem salvar o vídeo inteiro em disco ou na memória.
 
 ## Endpoints
 
 - `GET /` e `GET /health`: verificação de saúde.
-- `POST /download`: extrai e transmite um vídeo.
+- `POST /download`: extrai e transmite um vídeo do TikTok, YouTube ou Instagram.
 
 O endpoint exige o secret `API_KEY` e o cabeçalho `X-API-Key`.
 
@@ -27,11 +27,16 @@ YouTube:
 {"url":"https://www.youtube.com/watch?v=ID_DO_VIDEO"}
 ```
 
+Instagram Reel público:
+```json
+{"url":"https://www.instagram.com/reel/C3EW2ipRfpg/"}
+```
+
 A resposta bem-sucedida é o vídeo binário. O servidor usa o fluxo HTTP nativo, sem dividir manualmente a resposta em blocos de 64 KB. O limite do vídeo é 500 MiB para TikTok; o YouTube é transmitido em fluxo, sem arquivo temporário, e depende da disponibilidade de um formato MP4 que já contenha áudio e vídeo juntos.
 
 ## Executar localmente
 
-Requisitos: Node.js 20 ou superior, `yt-dlp` instalado e acessível no `PATH` para downloads do YouTube.
+Requisitos: Node.js 20 ou superior, Python 3, `yt-dlp` e `curl_cffi`. O Dockerfile instala `yt-dlp` e `curl_cffi` no mesmo ambiente Python para que a impersonação de navegador funcione.
 
 ```bash
 git clone https://github.com/chirusanrestart/melissa-downloader-api.git
@@ -50,6 +55,7 @@ Configure `API_KEY` em Secrets no Hostless. Não coloque chaves reais no Git.
 ## Limitações
 
 - TikTok depende da API externa TikWM.
+- A extração do Instagram pode falhar se a publicação não for pública, exigir login ou o Instagram bloquear a requisição mesmo com impersonação.
 - A extração do YouTube pode falhar se o YouTube alterar seus mecanismos, se o runtime Node.js não estiver disponível, ou se o formato combinado MP4 não existir para o vídeo.
 - A saída direta do `yt-dlp` é intencional: se ocorrer erro depois do início do vídeo, a conexão será encerrada para não apresentar um arquivo parcial como completo.
 - Use apenas conteúdo que você tem autorização para baixar.
