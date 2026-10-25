@@ -26,17 +26,17 @@ async function searchPinterest(query, min, max) {
   });
 
   if (!response.ok) {
-    throw new Error(`Pinterest respondeu HTTP ${response.status}`);
+    throw new Error("Pinterest respondeu HTTP " + response.status);
   }
 
   const html = await response.text();
   const normalized = html
-    .replace(/\\u002F/gi, "/")
-    .replace(/\\\//g, "/")
-    .replace(/&amp;/g, "&")
-    .replace(/\\u003D/gi, "=");
+    .split("\\u002F").join("/")
+    .split("\\/").join("/")
+    .split("&amp;").join("&")
+    .split("\\u003D").join("=");
 
-  const candidates = normalized.match(/https?:\/\/i\.pinimg\.com\/(?:originals|1200x|736x|564x|474x|236x|170x)\/[^"'\\s<>\\\\]+?\.(?:jpg|jpeg|png|webp)(?:\?[^"'\\s<>\\\\]*)?/gi) || [];
+  const candidates = normalized.match(/https?:\/\/i\.pinimg\.com\/(?:originals|1200x|736x|564x|474x|236x|170x)\/[A-Za-z0-9_%\-./]+?\.(?:jpg|jpeg|png|webp)(?:\?[A-Za-z0-9_%=&.-]*)?/gi) || [];
   const seen = new Set();
   const results = [];
 
@@ -62,7 +62,7 @@ async function searchPinterest(query, min, max) {
   }
 
   if (results.length < min) {
-    console.warn(`Pinterest retornou ${results.length} imagens para uma busca que pediu no mínimo ${min}`);
+    console.warn("Pinterest retornou " + results.length + " imagens para uma busca que pediu no mínimo " + min);
   }
 
   return results;
