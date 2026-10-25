@@ -2,9 +2,6 @@ import http from "node:http";
 import { spawn } from "node:child_process";
 import { Readable, Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
-import { pinterest } from "pinterest-dlp";
-import path from "node:path";
-import os from "node:os";
 
 
 const PORT = Number(process.env.PORT || 8000);
@@ -16,20 +13,59 @@ const YTDLP_TIMEOUT_MS = 180_000;
 
 
 async function searchPinterest(query, min, max) {
-  const outputDir = path.resolve(os.tmpdir(), "melissa-pinterest-downloads");
   const searchUrl = new URL("https://www.pinterest.com/search/pins/");
   searchUrl.searchParams.set("q", query);
 
-  const result = await pinterest(searchUrl.toString(), {
-    out: outputDir,
-    limit: max
+  const response = await fetch(searchUrl, {
+    headers: {
+      "user-agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+      "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+      "accept-language": "pt-BR,pt;q=0.9,en;q=0.7"
+    },
+    signal: AbortSignal.timeout(15_000)
   });
 
-  if (!Array.isArray(result)) {
-    throw new Error("pinterest-dlp retornou um formato de resposta inesperado");
+  if (!response.ok) {
+    throw new Error(`Pinterest respondeu HTTP ${response.status}`);
   }
 
-  return result.slice(0, max);
+  const html = await response.text();
+  const normalized = html
+    .replace(/\\u002F/gi, "/")
+    .replace(/\\\//g, "/")
+    .replace(/&amp;/g, "&")
+    .replace(/\\u003D/gi, "=");
+
+  const candidates = normalized.match(/https?:\/\/i\.pinimg\.com\/(?:originals|1200x|736x|564x|474x|236x|170x)\/[^"'\\s<>\\\\]+?\.(?:jpg|jpeg|png|webp)(?:\?[^"'\\s<>\\\\]*)?/gi) || [];
+  const seen = new Set();
+  const results = [];
+
+  for (const candidate of candidates) {
+    let imageUrl;
+    try {
+      imageUrl = new URL(candidate).toString();
+    } catch {
+      continue;
+    }
+
+    if (seen.has(imageUrl)) continue;
+    seen.add(imageUrl);
+
+    results.push({
+      url: imageUrl,
+      type: "image",
+      source: "pinterest",
+      query
+    });
+
+    if (results.length >= max) break;
+  }
+
+  if (results.length < min) {
+    console.warn(`Pinterest retornou ${results.length} imagens para uma busca que pediu no mínimo ${min}`);
+  }
+
+  return results;
 }
 
 function sendJson(res, status, body) {
@@ -586,7 +622,7 @@ const server = http.createServer(async (req, res) => {
       const results = await searchPinterest(query, min, max);
       return sendJson(res, 200, {
         ok: true,
-        source: "pinterest-dlp",
+        source: "pinterest-public-html",
         query,
         min_requested: min,
         max_requested: max,
