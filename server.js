@@ -2,6 +2,7 @@ import http from "node:http";
 import { spawn } from "node:child_process";
 import { Readable, Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
+import { searchPinterest } from "./pinterestScraper.js";
 
 const PORT = Number(process.env.PORT || 8000);
 const API_KEY = process.env.API_KEY || "";
@@ -527,7 +528,7 @@ const server = http.createServer(async (req, res) => {
     });
   }
 
-  if (req.method !== "POST" || pathname !== "/download") {
+  if (req.method !== "POST" || !["/download", "/pinterest/search"].includes(pathname)) {
     return sendJson(res, 404, { error: "Rota não encontrada" });
   }
 
@@ -540,6 +541,22 @@ const server = http.createServer(async (req, res) => {
     payload = await readJson(req);
   } catch (err) {
     return sendJson(res, err.statusCode || 400, { error: err.message });
+  }
+
+  if (pathname === "/pinterest/search") {
+    if (typeof payload.query !== "string" || !payload.query.trim()) {
+      return sendJson(res, 400, { error: "Informe uma busca no campo query" });
+    }
+    const query = payload.query.trim().slice(0, 200);
+    const requestedMax = Number(payload.max ?? 20);
+    const max = Number.isFinite(requestedMax) ? Math.max(1, Math.min(60, Math.floor(requestedMax))) : 20;
+    try {
+      const results = await searchPinterest(query, max);
+      return sendJson(res, 200, { ok: true, source: "pinterest-scraper", query, count: results.length, results });
+    } catch (err) {
+      console.error("Pinterest scraper falhou:", err.message);
+      return sendJson(res, 502, { error: "Falha ao pesquisar no Pinterest" });
+    }
   }
 
   if (typeof payload.url !== "string") {
