@@ -1,13 +1,14 @@
 # Melissa Downloader API 🐢
 
-API HTTP em Node.js nativo, sem Express e sem dependências npm externas. Suporta vídeos do TikTok via TikWM e vídeos do YouTube e Instagram via `yt-dlp` com `curl_cffi` para impersonação de navegador no Instagram, transmitindo o conteúdo diretamente ao cliente sem salvar o vídeo inteiro em disco ou na memória.
+API HTTP em Node.js nativo, sem Express e sem dependências npm externas. Suporta vídeos do TikTok via TikWM, vídeos do YouTube e Instagram via `yt-dlp`, e pesquisa de imagens no Pinterest via scraper dedicado com `curl_cffi` para impersonação de navegador no Instagram, transmitindo o conteúdo diretamente ao cliente sem salvar o vídeo inteiro em disco ou na memória.
 
 ## Endpoints
 
 - `GET /` e `GET /health`: verificação de saúde.
 - `POST /download`: extrai e transmite um vídeo do TikTok, YouTube ou Instagram.
+- `POST /pinterest/search`: pesquisa pins e retorna metadados/URLs de imagens pelo scraper dedicado do Pinterest.
 
-O endpoint exige o secret `API_KEY` e o cabeçalho `X-API-Key`.
+Todos os endpoints POST exigem o secret `API_KEY` e o cabeçalho `X-API-Key`.
 
 ### Exemplo de requisição
 
@@ -33,6 +34,20 @@ Instagram Reel público:
 ```
 
 A resposta bem-sucedida é o vídeo binário. O servidor usa o fluxo HTTP nativo, sem dividir manualmente a resposta em blocos de 64 KB. O limite do vídeo é 500 MiB para TikTok; o YouTube é transmitido em fluxo, sem arquivo temporário, e depende da disponibilidade de um formato MP4 que já contenha áudio e vídeo juntos.
+
+### Pinterest: pesquisar imagens
+
+```http
+POST /pinterest/search
+Content-Type: application/json
+X-API-Key: SUA_CHAVE
+```
+
+```json
+{"query":"anime wallpaper","max":20}
+```
+
+A resposta é JSON com `count` e `results`; cada resultado pode incluir `url` (imagem), `pinUrl`, `title`, `description` e `animated`. O limite é de 1 a 60 resultados por pedido. Essa rota pesquisa pins e devolve links, não transmite um arquivo de imagem como a rota `/download`.
 
 ## Executar localmente
 
