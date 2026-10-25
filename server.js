@@ -1,14 +1,17 @@
 import http from "node:http";
+import { spawn } from "node:child_process";
 import { Readable, Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
 
-const PORT = Number(process.env.PORT || 7860);
+const PORT = Number(process.env.PORT || 8000);
 const API_KEY = process.env.API_KEY || "";
 const MAX_BODY = 8 * 1024;
 const MAX_VIDEO_BYTES = 500 * 1024 * 1024;
+const YTDLP = process.env.YTDLP_PATH || "yt-dlp";
+const YTDLP_TIMEOUT_MS = 180_000;
 
 function sendJson(res, status, body) {
-  if (res.headersSent) return;
+  if (res.headersSent || res.destroyed) return;
   res.writeHead(status, { "content-type": "application/json; charset=utf-8" });
   res.end(JSON.stringify(body));
 }
@@ -18,6 +21,25 @@ function isTikTokUrl(value) {
     const url = new URL(value);
     return url.protocol === "https:" &&
       (url.hostname === "tiktok.com" || url.hostname.endsWith(".tiktok.com"));
+  } catch {
+    return false;
+  }
+}
+
+function isYouTubeUrl(value) {
+  try {
+    const url = new URL(value);
+    const hosts = new Set([
+      "youtube.com",
+      "www.youtube.com",
+      "m.youtube.com",
+      "music.youtube.com",
+      "youtu.be",
+      "youtube-nocookie.com",
+      "www.youtube-nocookie.com"
+    ]);
+    return url.protocol === "https:" && hosts.has(url.hostname) &&
+      !url.username && !url.password;
   } catch {
     return false;
   }
@@ -42,42 +64,7 @@ async function readJson(req) {
   }
 }
 
-const server = http.createServer(async (req, res) => {
-  let pathname;
-  try {
-    pathname = new URL(req.url || "/", "http://localhost").pathname;
-  } catch {
-    return sendJson(res, 400, { error: "URL de requisição inválida" });
-  }
-
-  if (req.method === "GET" && (pathname === "/" || pathname === "/health")) {
-    return sendJson(res, 200, {
-      ok: true,
-      service: "melissa-downloader-api",
-      runtime: "node",
-      endpoint: "POST /download"
-    });
-  }
-
-  if (req.method !== "POST" || pathname !== "/download") {
-    return sendJson(res, 404, { error: "Rota não encontrada" });
-  }
-
-  if (!API_KEY || req.headers["x-api-key"] !== API_KEY) {
-    return sendJson(res, 401, { error: "X-API-Key inválida ou API_KEY não configurada" });
-  }
-
-  let payload;
-  try {
-    payload = await readJson(req);
-  } catch (err) {
-    return sendJson(res, err.statusCode || 400, { error: err.message });
-  }
-
-  if (!isTikTokUrl(payload.url)) {
-    return sendJson(res, 400, { error: "Envie uma URL HTTPS válida do TikTok no campo url" });
-  }
-
+async function streamTikTok(payload, req, res) {
   const abortController = new AbortController();
   res.on("close", () => {
     if (!res.writableEnded) abortController.abort();
@@ -89,7 +76,7 @@ const server = http.createServer(async (req, res) => {
       method: "POST",
       headers: {
         "content-type": "application/x-www-form-urlencoded; charset=UTF-8",
-        "user-agent": "Mozilla/5.0 MelissaDownloaderAPI/2.0"
+        "user-agent": "Mozilla/5.0 MelissaDownloaderAPI/3.0"
       },
       body: form,
       signal: abortController.signal
@@ -114,7 +101,7 @@ const server = http.createServer(async (req, res) => {
     }
 
     const videoResponse = await fetch(videoUrl, {
-      headers: { "user-agent": "Mozilla/5.0 MelissaDownloaderAPI/2.0" },
+      headers: { "user-agent": "Mozilla/5.0 MelissaDownloaderAPI/3.0" },
       signal: abortController.signal
     });
 
@@ -132,6 +119,7 @@ const server = http.createServer(async (req, res) => {
       "content-type": videoResponse.headers.get("content-type") || "video/mp4",
       "content-disposition": 'attachment; filename="tiktok-video.mp4"',
       "cache-control": "no-store",
+      "x-content-type-options": "nosniff",
       ...(declaredLength ? { "content-length": String(declaredLength) } : {})
     });
 
@@ -149,14 +137,166 @@ const server = http.createServer(async (req, res) => {
 
     await pipeline(Readable.fromWeb(videoResponse.body), sizeGuard, res);
   } catch (err) {
+    if (err.name === "AbortError" || res.destroyed) return;
     if (!res.headersSent) {
       sendJson(res, 502, { error: "Falha ao consultar TikWM ou transmitir o vídeo" });
     } else {
       res.destroy(err);
     }
   }
+}
+
+function streamYouTube(videoUrl, req, res) {
+  const args = [
+    "--no-playlist",
+    "--no-warnings",
+    "--no-progress",
+    "--js-runtimes", "node",
+    "--remote-components", "ejs:github",
+    "-f", "best[ext=mp4][vcodec!=none][acodec!=none]",
+    "-o", "-",
+    "--",
+    videoUrl
+  ];
+
+  const child = spawn(YTDLP, args, {
+    stdio: ["ignore", "pipe", "pipe"]
+  });
+
+  let stderr = "";
+  let gotOutput = false;
+  let settled = false;
+
+  const timeout = setTimeout(() => {
+    child.kill("SIGTERM");
+    setTimeout(() => {
+      if (child.exitCode === null) child.kill("SIGKILL");
+    }, 3000).unref();
+  }, YTDLP_TIMEOUT_MS);
+  timeout.unref();
+
+  child.stderr.setEncoding("utf8");
+  child.stderr.on("data", chunk => {
+    stderr = (stderr + chunk).slice(-4000);
+  });
+
+  child.stdout.once("data", firstChunk => {
+    if (settled || res.destroyed) return;
+    gotOutput = true;
+    res.writeHead(200, {
+      "content-type": "video/mp4",
+      "content-disposition": 'inline; filename="video.mp4"',
+      "cache-control": "no-store",
+      "x-content-type-options": "nosniff"
+    });
+
+    if (!res.write(firstChunk)) {
+      child.stdout.pause();
+      res.once("drain", () => {
+        if (!res.destroyed) child.stdout.pipe(res);
+      });
+    } else {
+      child.stdout.pipe(res);
+    }
+  });
+
+  child.on("error", err => {
+    if (settled) return;
+    settled = true;
+    clearTimeout(timeout);
+    console.error("Não foi possível iniciar yt-dlp:", err.message);
+    if (!res.headersSent) {
+      sendJson(res, 503, { error: "yt-dlp não está instalado ou não pôde ser iniciado" });
+    } else if (!res.destroyed) {
+      res.destroy(err);
+    }
+  });
+
+  child.on("close", (code, signal) => {
+    if (settled) return;
+    settled = true;
+    clearTimeout(timeout);
+
+    if (code === 0 && gotOutput) {
+      if (!res.destroyed && !res.writableEnded) res.end();
+      return;
+    }
+
+    console.error("yt-dlp falhou:", { code, signal, stderr });
+    if (!res.headersSent) {
+      sendJson(res, 502, {
+        error: "Falha ao extrair o vídeo do YouTube",
+        details: stderr.slice(-1200) || "yt-dlp terminou sem produzir vídeo"
+      });
+    } else if (!res.destroyed) {
+      res.destroy(new Error("yt-dlp terminou antes de concluir a transferência"));
+    }
+  });
+
+  res.on("close", () => {
+    if (!res.writableEnded && child.exitCode === null) {
+      child.kill("SIGTERM");
+    }
+  });
+}
+
+const server = http.createServer(async (req, res) => {
+  let parsedRequest;
+  try {
+    parsedRequest = new URL(req.url || "/", "http://localhost");
+  } catch {
+    return sendJson(res, 400, { error: "URL de requisição inválida" });
+  }
+
+  const pathname = parsedRequest.pathname;
+
+  if (req.method === "GET" && (pathname === "/" || pathname === "/health")) {
+    return sendJson(res, 200, {
+      ok: true,
+      service: "melissa-downloader-api",
+      runtime: "node",
+      port: PORT,
+      endpoints: ["POST /download"]
+    });
+  }
+
+  if (req.method !== "POST" || pathname !== "/download") {
+    return sendJson(res, 404, { error: "Rota não encontrada" });
+  }
+
+  if (!API_KEY || req.headers["x-api-key"] !== API_KEY) {
+    return sendJson(res, 401, { error: "X-API-Key inválida ou API_KEY não configurada" });
+  }
+
+  let payload;
+  try {
+    payload = await readJson(req);
+  } catch (err) {
+    return sendJson(res, err.statusCode || 400, { error: err.message });
+  }
+
+  if (typeof payload.url !== "string") {
+    return sendJson(res, 400, { error: "Informe uma URL no campo url" });
+  }
+
+  if (isTikTokUrl(payload.url)) {
+    return streamTikTok(payload, req, res);
+  }
+
+  if (isYouTubeUrl(payload.url)) {
+    return streamYouTube(payload.url, req, res);
+  }
+
+  return sendJson(res, 400, {
+    error: "URL não suportada. Envie um link HTTPS do TikTok ou YouTube."
+  });
 });
 
+if (!API_KEY) {
+  console.error("Configure API_KEY nos secrets do Hostless.");
+  process.exit(1);
+}
+
 server.listen(PORT, "0.0.0.0", () => {
-  console.log(`Melissa Downloader API (Node.js) ouvindo na porta ${PORT}`);
+  console.log(`Melissa Downloader API ouvindo na porta ${PORT}`);
 });
