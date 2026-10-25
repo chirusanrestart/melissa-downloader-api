@@ -1,11 +1,13 @@
-FROM node:22-alpine
+FROM node:22-slim
 
 ENV NODE_ENV=production \
     PORT=8000
 
-RUN apk add --no-cache ca-certificates wget \
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates wget \
     && wget -q https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_linux -O /usr/local/bin/yt-dlp \
-    && chmod a+rx /usr/local/bin/yt-dlp
+    && chmod a+rx /usr/local/bin/yt-dlp \
+    && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 COPY package.json ./
