@@ -9,11 +9,12 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates python3 python3-venv ffmpeg \
     && python3 -m venv /opt/venv \
     && /opt/venv/bin/python -m pip install --no-cache-dir --upgrade pip \
-    && /opt/venv/bin/python -m pip install --no-cache-dir yt-dlp curl_cffi \
+    && /opt/venv/bin/python -m pip install --no-cache-dir yt-dlp curl_cffi pinterest-dl \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 COPY package.json ./
 COPY server.js ./
+COPY pinterest_search.py ./
 EXPOSE 8000
 CMD ["npm", "start"]
