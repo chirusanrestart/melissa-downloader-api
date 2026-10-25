@@ -13,7 +13,7 @@ const PYTHON = process.env.PYTHON_PATH || "python";
 const YTDLP_TIMEOUT_MS = 180_000;
 
 
-function searchPinterest(query, max) {
+function searchPinterest(query, min, max) {
   return new Promise((resolve, reject) => {
     const child = spawn(PYTHON, ["./pinterest_search.py"], { stdio: ["pipe", "pipe", "pipe"] });
     let stdout = "";
@@ -63,7 +63,7 @@ function searchPinterest(query, max) {
         reject(new Error("Não foi possível interpretar a resposta do pinterest-dl: " + err.message));
       }
     });
-    child.stdin.end(JSON.stringify({ query, max }));
+    child.stdin.end(JSON.stringify({ query, min, max }));
   });
 }
 
@@ -438,8 +438,6 @@ async function streamViaVideoScale(videoUrl, res, mode) {
 function streamYouTube(videoUrl, req, res, mode = "video", platform = "youtube") {
   const isAudio = mode === "audio";
   const isInstagram = platform === "instagram";
-  // Para áudio, prioriza M4A nativo do YouTube, sem renomear WebM/Opus como M4A.
-  // Se não houver M4A disponível, o yt-dlp falha e o fallback VideoScale + FFmpeg converte.
   const outputFormat = isInstagram
     ? "best[ext=mp4]/best"
     : isAudio
@@ -580,7 +578,7 @@ const server = http.createServer(async (req, res) => {
       service: "melissa-downloader-api",
       runtime: "node",
       port: PORT,
-      endpoints: ["POST /download"]
+      endpoints: ["POST /download", "POST /pinterest/search"]
     });
   }
 
@@ -603,12 +601,34 @@ const server = http.createServer(async (req, res) => {
     if (typeof payload.query !== "string" || !payload.query.trim()) {
       return sendJson(res, 400, { error: "Informe uma busca no campo query" });
     }
+
     const query = payload.query.trim().slice(0, 200);
+    const requestedMin = Number(payload.min ?? 1);
     const requestedMax = Number(payload.max ?? 20);
-    const max = Number.isFinite(requestedMax) ? Math.max(1, Math.min(60, Math.floor(requestedMax))) : 20;
+
+    if (!Number.isInteger(requestedMin) || !Number.isInteger(requestedMax)) {
+      return sendJson(res, 400, { error: "Os campos min e max devem ser números inteiros" });
+    }
+
+    const min = Math.max(1, Math.min(60, requestedMin));
+    const max = Math.max(1, Math.min(60, requestedMax));
+
+    if (min > max) {
+      return sendJson(res, 400, { error: "O campo min não pode ser maior que max" });
+    }
+
     try {
-      const results = await searchPinterest(query, max);
-      return sendJson(res, 200, { ok: true, source: "pinterest-dl", query, count: results.length, results });
+      const results = await searchPinterest(query, min, max);
+      return sendJson(res, 200, {
+        ok: true,
+        source: "pinterest-dl",
+        query,
+        min_requested: min,
+        max_requested: max,
+        count: results.length,
+        min_met: results.length >= min,
+        results
+      });
     } catch (err) {
       console.error("Pinterest scraper falhou:", err.message);
       return sendJson(res, 502, { error: "Falha ao pesquisar no Pinterest", details: String(err.message || "").slice(0, 500) });
