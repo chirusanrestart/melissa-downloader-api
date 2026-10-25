@@ -36,7 +36,7 @@ async function searchPinterest(query, min, max) {
     .split("&amp;").join("&")
     .split("\\u003D").join("=");
 
-  const candidates = normalized.match(/https?:\/\/i\.pinimg\.com\/(?:originals|1200x|736x|564x|474x|236x|170x)\/[A-Za-z0-9_%\-./]+?\.(?:jpg|jpeg|png|webp)(?:\?[A-Za-z0-9_%=&.-]*)?/gi) || [];
+const candidates = normalized.match(/https?:\/\/i\.pinimg\.com\/(?:originals|1200x|736x|564x|474x|236x|170x)\/[^"'\\\s<>]+?\.(?:jpg|jpeg|png|webp)(?:\?[^"'\\\s<>]*)?/gi) || [];
   const seen = new Set();
   const results = [];
 
