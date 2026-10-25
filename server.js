@@ -146,14 +146,20 @@ async function streamTikTok(payload, req, res) {
   }
 }
 
-function streamYouTube(videoUrl, req, res) {
+function streamYouTube(videoUrl, req, res, mode = "video") {
+  const isAudio = mode === "audio";
+  const outputFormat = isAudio
+    ? "bestaudio[ext=m4a]"
+    : "best[ext=mp4][vcodec!=none][acodec!=none]";
+  const outputType = isAudio ? "audio/mp4" : "video/mp4";
+  const outputName = isAudio ? "audio.m4a" : "video.mp4";
   const args = [
     "--no-playlist",
     "--no-warnings",
     "--no-progress",
     "--js-runtimes", "node",
     "--remote-components", "ejs:github",
-    "-f", "best[ext=mp4][vcodec!=none][acodec!=none]",
+    "-f", outputFormat,
     "-o", "-",
     "--",
     videoUrl
@@ -184,8 +190,8 @@ function streamYouTube(videoUrl, req, res) {
     if (settled || res.destroyed) return;
     gotOutput = true;
     res.writeHead(200, {
-      "content-type": "video/mp4",
-      "content-disposition": 'inline; filename="video.mp4"',
+      "content-type": outputType,
+      "content-disposition": `attachment; filename="${outputName}"`,
       "cache-control": "no-store",
       "x-content-type-options": "nosniff"
     });
@@ -225,7 +231,7 @@ function streamYouTube(videoUrl, req, res) {
     console.error("yt-dlp falhou:", { code, signal, stderr });
     if (!res.headersSent) {
       sendJson(res, 502, {
-        error: "Falha ao extrair o vídeo do YouTube",
+        error: isAudio ? "Falha ao extrair o áudio do YouTube" : "Falha ao extrair o vídeo do YouTube",
         details: stderr.slice(-1200) || "yt-dlp terminou sem produzir vídeo"
       });
     } else if (!res.destroyed) {
@@ -284,7 +290,8 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (isYouTubeUrl(payload.url)) {
-    return streamYouTube(payload.url, req, res);
+    const mode = payload.mode === "audio" || payload.audio === true ? "audio" : "video";
+    return streamYouTube(payload.url, req, res, mode);
   }
 
   return sendJson(res, 400, {
