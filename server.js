@@ -304,7 +304,7 @@ async function streamViaVideoScale(videoUrl, res, mode) {
       "-hide_banner", "-loglevel", "error",
       "-i", parsedMediaUrl.toString(),
       "-map", "0:a:0", "-vn",
-      "-codec:a", "libmp3lame", "-b:a", "96k",
+      "-codec:a", "libmp3lame", "-b:a", "128k",
       "-f", "mp3", "pipe:1"
     ], { stdio: ["ignore", "pipe", "pipe"] });
     let ffmpegError = "";
