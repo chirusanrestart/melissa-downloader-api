@@ -6,7 +6,6 @@ const PORT = Number(process.env.PORT || 7860);
 const API_KEY = process.env.API_KEY || "";
 const MAX_BODY = 8 * 1024;
 const MAX_VIDEO_BYTES = 500 * 1024 * 1024;
-const CHUNK_SIZE = 64 * 1024;
 
 function sendJson(res, status, body) {
   if (res.headersSent) return;
@@ -56,8 +55,7 @@ const server = http.createServer(async (req, res) => {
       ok: true,
       service: "melissa-downloader-api",
       runtime: "node",
-      endpoint: "POST /download",
-      chunkSize: CHUNK_SIZE
+      endpoint: "POST /download"
     });
   }
 
@@ -134,26 +132,22 @@ const server = http.createServer(async (req, res) => {
       "content-type": videoResponse.headers.get("content-type") || "video/mp4",
       "content-disposition": 'attachment; filename="tiktok-video.mp4"',
       "cache-control": "no-store",
-      "x-stream-chunk-size": String(CHUNK_SIZE),
       ...(declaredLength ? { "content-length": String(declaredLength) } : {})
     });
 
     let bytes = 0;
-    const chunker = new Transform({
+    const sizeGuard = new Transform({
       transform(chunk, encoding, callback) {
         bytes += chunk.length;
         if (bytes > MAX_VIDEO_BYTES) {
           callback(new Error("Vídeo excedeu o limite de 500 MiB"));
           return;
         }
-        for (let offset = 0; offset < chunk.length; offset += CHUNK_SIZE) {
-          this.push(chunk.subarray(offset, Math.min(offset + CHUNK_SIZE, chunk.length)));
-        }
-        callback();
+        callback(null, chunk);
       }
     });
 
-    await pipeline(Readable.fromWeb(videoResponse.body), chunker, res);
+    await pipeline(Readable.fromWeb(videoResponse.body), sizeGuard, res);
   } catch (err) {
     if (!res.headersSent) {
       sendJson(res, 502, { error: "Falha ao consultar TikWM ou transmitir o vídeo" });
