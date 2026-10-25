@@ -146,6 +146,163 @@ async function streamTikTok(payload, req, res) {
   }
 }
 
+
+const VIDEOSCALE_BASE_URL = "https://gate.apiscrape.net:16262";
+const VIDEOSCALE_USERNAME = process.env.VIDEOSCALE_USERNAME || "";
+const VIDEOSCALE_PASSWORD = process.env.VIDEOSCALE_PASSWORD || "";
+const VIDEOSCALE_TIMEOUT_MS = 15_000;
+const VIDEOSCALE_TASK_TIMEOUT_MS = 120_000;
+
+function videoScaleAuthHeaders() {
+  if (!VIDEOSCALE_USERNAME || !VIDEOSCALE_PASSWORD) {
+    throw new Error("VideoScale não configurado: defina VIDEOSCALE_USERNAME e VIDEOSCALE_PASSWORD");
+  }
+  const token = Buffer.from(`${VIDEOSCALE_USERNAME}:${VIDEOSCALE_PASSWORD}`).toString("base64");
+  return { authorization: `Basic ${token}` };
+}
+
+async function videoScaleJson(url, options = {}) {
+  const response = await fetch(url, {
+    ...options,
+    signal: AbortSignal.timeout(VIDEOSCALE_TIMEOUT_MS),
+    headers: { ...videoScaleAuthHeaders(), ...(options.headers || {}) }
+  });
+  const raw = await response.text();
+  let data;
+  try { data = JSON.parse(raw); } catch {
+    throw new Error(`VideoScale respondeu HTTP ${response.status} com JSON inválido`);
+  }
+  if (!response.ok) {
+    throw new Error(`VideoScale HTTP ${response.status}: ${String(data?.error || data?.message || "requisição falhou").slice(0, 300)}`);
+  }
+  return data;
+}
+
+function findDeepObjects(value, predicate, found = [], depth = 0) {
+  if (!value || typeof value !== "object" || depth > 8) return found;
+  if (!Array.isArray(value) && predicate(value)) found.push(value);
+  for (const item of Array.isArray(value) ? value : Object.values(value)) {
+    findDeepObjects(item, predicate, found, depth + 1);
+  }
+  return found;
+}
+
+function findDeepString(value, keys, depth = 0) {
+  if (!value || typeof value !== "object" || depth > 8) return "";
+  for (const key of keys) {
+    if (typeof value[key] === "string" && value[key]) return value[key];
+  }
+  for (const item of Array.isArray(value) ? value : Object.values(value)) {
+    const found = findDeepString(item, keys, depth + 1);
+    if (found) return found;
+  }
+  return "";
+}
+
+function chooseVideoScaleFormat(payload, mode) {
+  const formats = findDeepObjects(payload, item =>
+    item.format_id !== undefined || item.formatId !== undefined || item.formatID !== undefined
+  );
+  if (!formats.length) throw new Error("VideoScale não retornou formatos reconhecíveis");
+
+  const formatId = item => String(item.format_id ?? item.formatId ?? item.formatID);
+  const codec = (item, keys) => String(keys.map(key => item[key]).find(value => value !== undefined && value !== null) ?? "").toLowerCase();
+  const audioFormats = formats.filter(item => {
+    const audio = codec(item, ["acodec", "audio_codec", "audioCodec"]);
+    const video = codec(item, ["vcodec", "video_codec", "videoCodec"]);
+    return audio && audio !== "none" && (video === "none" || item.audio_only === true || item.audioOnly === true || item.type === "audio");
+  });
+  const combinedFormats = formats.filter(item => {
+    const audio = codec(item, ["acodec", "audio_codec", "audioCodec"]);
+    const video = codec(item, ["vcodec", "video_codec", "videoCodec"]);
+    return video && video !== "none" && audio && audio !== "none";
+  });
+  const candidates = mode === "audio"
+    ? (audioFormats.length ? audioFormats : formats.filter(item => {
+        const type = String(item.type ?? item.format_type ?? "").toLowerCase();
+        return type.includes("audio") || item.audio_only === true || item.audioOnly === true;
+      }))
+    : (combinedFormats.length ? combinedFormats : formats.filter(item => {
+        const type = String(item.type ?? item.format_type ?? "").toLowerCase();
+        return type.includes("video") && !type.includes("only");
+      }));
+  if (!candidates.length) throw new Error(`VideoScale não retornou formato adequado para ${mode}`);
+
+  candidates.sort((a, b) => {
+    const aExt = String(a.ext ?? a.extension ?? "").toLowerCase();
+    const bExt = String(b.ext ?? b.extension ?? "").toLowerCase();
+    const aHeight = Number(a.height ?? String(a.resolution ?? "").match(/(\\d+)p/)?.[1] ?? 0);
+    const bHeight = Number(b.height ?? String(b.resolution ?? "").match(/(\\d+)p/)?.[1] ?? 0);
+    const aScore = (mode === "audio" ? (aExt === "m4a" ? 20 : aExt === "webm" ? 10 : 0) : (aExt === "mp4" ? 20 : 0)) + aHeight / 10000;
+    const bScore = (mode === "audio" ? (bExt === "m4a" ? 20 : bExt === "webm" ? 10 : 0) : (bExt === "mp4" ? 20 : 0)) + bHeight / 10000;
+    return bScore - aScore;
+  });
+  return formatId(candidates[0]);
+}
+
+async function streamViaVideoScale(videoUrl, res, mode) {
+  const authHeaders = videoScaleAuthHeaders();
+  const formatsUrl = new URL(`${VIDEOSCALE_BASE_URL}/api/formats`);
+  formatsUrl.searchParams.set("video_url", videoUrl);
+  const formatsPayload = await videoScaleJson(formatsUrl, { method: "GET" });
+  const formatId = chooseVideoScaleFormat(formatsPayload, mode);
+
+  const taskPayload = await videoScaleJson(`${VIDEOSCALE_BASE_URL}/api/download`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ url: videoUrl, format_id: formatId })
+  });
+  const taskId = findDeepString(taskPayload, ["task_id", "taskId", "taskID"]);
+  if (!taskId) throw new Error("VideoScale não retornou task_id");
+
+  const deadline = Date.now() + VIDEOSCALE_TASK_TIMEOUT_MS;
+  let taskStatus = "";
+  while (Date.now() < deadline) {
+    if (res.destroyed) return;
+    await new Promise(resolve => setTimeout(resolve, 2000));
+    const statusPayload = await videoScaleJson(
+      `${VIDEOSCALE_BASE_URL}/api/status/${encodeURIComponent(taskId)}`,
+      { method: "GET" }
+    );
+    taskStatus = findDeepString(statusPayload, ["status", "state"]).toLowerCase();
+    if (["completed", "complete", "success", "succeeded", "done", "finished"].includes(taskStatus)) break;
+    if (["failed", "error", "cancelled", "canceled"].includes(taskStatus)) {
+      throw new Error(`Tarefa VideoScale falhou: ${taskStatus}`);
+    }
+  }
+  if (!["completed", "complete", "success", "succeeded", "done", "finished"].includes(taskStatus)) {
+    throw new Error("Tempo limite aguardando o download no VideoScale");
+  }
+
+  const downloadPayload = await videoScaleJson(
+    `${VIDEOSCALE_BASE_URL}/api/download/${encodeURIComponent(taskId)}`,
+    { method: "GET" }
+  );
+  const mediaUrl = findDeepString(downloadPayload, ["download_url", "downloadUrl", "direct_url", "directUrl", "file_url", "fileUrl"]);
+  if (!mediaUrl || mediaUrl === videoUrl) throw new Error("VideoScale não retornou uma URL de mídia");
+  const parsedMediaUrl = new URL(mediaUrl);
+  if (parsedMediaUrl.protocol !== "https:") throw new Error("VideoScale retornou uma URL de mídia não segura");
+
+  const mediaResponse = await fetch(parsedMediaUrl, {
+    headers: { "user-agent": "MelissaDownloaderAPI/3.0" },
+    signal: AbortSignal.timeout(60_000)
+  });
+  if (!mediaResponse.ok || !mediaResponse.body) {
+    throw new Error(`Não foi possível obter a mídia do VideoScale (HTTP ${mediaResponse.status})`);
+  }
+
+  res.writeHead(200, {
+    "content-type": mode === "audio"
+      ? (mediaResponse.headers.get("content-type") || "application/octet-stream")
+      : (mediaResponse.headers.get("content-type") || "video/mp4"),
+    "content-disposition": `attachment; filename="${mode === "audio" ? "audio.bin" : "video.mp4"}"`,
+    "cache-control": "no-store",
+    "x-content-type-options": "nosniff"
+  });
+  await pipeline(Readable.fromWeb(mediaResponse.body), res);
+  console.log("VideoScale fallback concluído", { mode });
+}
+
 function streamYouTube(videoUrl, req, res, mode = "video") {
   const isAudio = mode === "audio";
   // Aceita qualquer formato de áudio disponível (M4A, WebM/Opus etc.).
@@ -222,7 +379,7 @@ function streamYouTube(videoUrl, req, res, mode = "video") {
     }
   });
 
-  child.on("close", (code, signal) => {
+  child.on("close", async (code, signal) => {
     if (settled) return;
     settled = true;
     clearTimeout(timeout);
@@ -233,10 +390,31 @@ function streamYouTube(videoUrl, req, res, mode = "video") {
     }
 
     console.error("yt-dlp falhou:", { code, signal, stderr });
+    if (!res.headersSent && !res.destroyed && VIDEOSCALE_USERNAME && VIDEOSCALE_PASSWORD) {
+      console.log("Tentando fallback VideoScale após falha do yt-dlp", { mode });
+      try {
+        await streamViaVideoScale(videoUrl, res, mode);
+        return;
+      } catch (fallbackError) {
+        console.error("VideoScale fallback falhou:", fallbackError.message);
+        if (!res.headersSent && !res.destroyed) {
+          sendJson(res, 502, {
+            error: isAudio ? "Falha no YouTube via yt-dlp e VideoScale" : "Falha no vídeo via yt-dlp e VideoScale",
+            yt_dlp: stderr.slice(-800) || `yt-dlp encerrou com código ${code}`,
+            videoscale: fallbackError.message.slice(0, 800)
+          });
+        } else if (!res.destroyed) {
+          res.destroy(fallbackError);
+        }
+      }
+      return;
+    }
+
     if (!res.headersSent) {
       sendJson(res, 502, {
         error: isAudio ? "Falha ao extrair o áudio do YouTube" : "Falha ao extrair o vídeo do YouTube",
-        details: stderr.slice(-1200) || "yt-dlp terminou sem produzir vídeo"
+        details: stderr.slice(-1200) || "yt-dlp terminou sem produzir vídeo",
+        ...(VIDEOSCALE_USERNAME && VIDEOSCALE_PASSWORD ? {} : { fallback: "Configure VIDEOSCALE_USERNAME e VIDEOSCALE_PASSWORD para ativar o fallback" })
       });
     } else if (!res.destroyed) {
       res.destroy(new Error("yt-dlp terminou antes de concluir a transferência"));
