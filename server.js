@@ -2,6 +2,9 @@ import http from "node:http";
 import { spawn } from "node:child_process";
 import { Readable, Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
+import { pinterest } from "pinterest-dlp";
+import path from "node:path";
+import os from "node:os";
 
 
 const PORT = Number(process.env.PORT || 8000);
@@ -9,62 +12,24 @@ const API_KEY = process.env.API_KEY || "";
 const MAX_BODY = 8 * 1024;
 const MAX_VIDEO_BYTES = 500 * 1024 * 1024;
 const YTDLP = process.env.YTDLP_PATH || "yt-dlp";
-const PYTHON = process.env.PYTHON_PATH || "python";
 const YTDLP_TIMEOUT_MS = 180_000;
 
 
-function searchPinterest(query, min, max) {
-  return new Promise((resolve, reject) => {
-    const child = spawn(PYTHON, ["./pinterest_search.py"], { stdio: ["pipe", "pipe", "pipe"] });
-    let stdout = "";
-    let stderr = "";
-    let settled = false;
-    const timeout = setTimeout(() => {
-      child.kill("SIGTERM");
-      setTimeout(() => {
-        if (child.exitCode === null) child.kill("SIGKILL");
-      }, 1500).unref();
-      if (!settled) {
-        settled = true;
-        reject(new Error("Tempo limite da pesquisa Pinterest"));
-      }
-    }, 45_000);
-    timeout.unref();
-    child.stdout.setEncoding("utf8");
-    child.stderr.setEncoding("utf8");
-    child.stdout.on("data", chunk => {
-      stdout += chunk;
-      if (Buffer.byteLength(stdout) > 2 * 1024 * 1024) {
-        child.kill("SIGTERM");
-        if (!settled) {
-          settled = true;
-          clearTimeout(timeout);
-          reject(new Error("Resposta Pinterest excedeu o limite"));
-        }
-      }
-    });
-    child.stderr.on("data", chunk => { stderr = (stderr + chunk).slice(-3000); });
-    child.once("error", err => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timeout);
-      reject(err);
-    });
-    child.once("close", code => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timeout);
-      if (code !== 0) return reject(new Error(stderr || `pinterest-dl terminou com código ${code}`));
-      try {
-        const data = JSON.parse(stdout);
-        if (!Array.isArray(data)) throw new Error("Formato de resposta inválido");
-        resolve(data.slice(0, max));
-      } catch (err) {
-        reject(new Error("Não foi possível interpretar a resposta do pinterest-dl: " + err.message));
-      }
-    });
-    child.stdin.end(JSON.stringify({ query, min, max }));
+async function searchPinterest(query, min, max) {
+  const outputDir = path.resolve(os.tmpdir(), "melissa-pinterest-downloads");
+  const searchUrl = new URL("https://www.pinterest.com/search/pins/");
+  searchUrl.searchParams.set("q", query);
+
+  const result = await pinterest(searchUrl.toString(), {
+    out: outputDir,
+    limit: max
   });
+
+  if (!Array.isArray(result)) {
+    throw new Error("pinterest-dlp retornou um formato de resposta inesperado");
+  }
+
+  return result.slice(0, max);
 }
 
 function sendJson(res, status, body) {
@@ -621,7 +586,7 @@ const server = http.createServer(async (req, res) => {
       const results = await searchPinterest(query, min, max);
       return sendJson(res, 200, {
         ok: true,
-        source: "pinterest-dl",
+        source: "pinterest-dlp",
         query,
         min_requested: min,
         max_requested: max,
