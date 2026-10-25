@@ -26,6 +26,17 @@ function isTikTokUrl(value) {
   }
 }
 
+function isInstagramUrl(value) {
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" &&
+      ["instagram.com", "www.instagram.com", "m.instagram.com"].includes(url.hostname) &&
+      !url.username && !url.password;
+  } catch {
+    return false;
+  }
+}
+
 function isYouTubeUrl(value) {
   try {
     const url = new URL(value);
@@ -367,21 +378,25 @@ async function streamViaVideoScale(videoUrl, res, mode) {
   console.log("VideoScale fallback concluído", { mode });
 }
 
-function streamYouTube(videoUrl, req, res, mode = "video") {
+function streamYouTube(videoUrl, req, res, mode = "video", platform = "youtube") {
   const isAudio = mode === "audio";
+  const isInstagram = platform === "instagram";
   // Para áudio, prioriza M4A nativo do YouTube, sem renomear WebM/Opus como M4A.
   // Se não houver M4A disponível, o yt-dlp falha e o fallback VideoScale + FFmpeg converte.
-  const outputFormat = isAudio
-    ? "bestaudio[ext=m4a]"
-    : "best[ext=mp4][vcodec!=none][acodec!=none]";
+  const outputFormat = isInstagram
+    ? "best[ext=mp4]/best"
+    : isAudio
+      ? "bestaudio[ext=m4a]"
+      : "best[ext=mp4][vcodec!=none][acodec!=none]";
   const outputType = isAudio ? "audio/mp4" : "video/mp4";
-  const outputName = isAudio ? "audio.m4a" : "video.mp4";
+  const outputName = isInstagram ? "instagram-video.mp4" : isAudio ? "audio.m4a" : "video.mp4";
   const args = [
     "--no-playlist",
     "--no-warnings",
     "--no-progress",
     "--js-runtimes", "node",
     "--remote-components", "ejs:github",
+    ...(isInstagram ? ["--extractor-retries", "2"] : []),
     "-f", outputFormat,
     "-o", "-",
     "--",
@@ -452,7 +467,7 @@ function streamYouTube(videoUrl, req, res, mode = "video") {
     }
 
     console.error("yt-dlp falhou:", { code, signal, stderr });
-    if (!res.headersSent && !res.destroyed && VIDEOSCALE_USERNAME && VIDEOSCALE_PASSWORD) {
+    if (!isInstagram && !res.headersSent && !res.destroyed && VIDEOSCALE_USERNAME && VIDEOSCALE_PASSWORD) {
       console.log("Tentando fallback VideoScale após falha do yt-dlp", { mode });
       try {
         await streamViaVideoScale(videoUrl, res, mode);
@@ -535,11 +550,15 @@ const server = http.createServer(async (req, res) => {
 
   if (isYouTubeUrl(payload.url)) {
     const mode = payload.mode === "audio" || payload.audio === true ? "audio" : "video";
-    return streamYouTube(payload.url, req, res, mode);
+    return streamYouTube(payload.url, req, res, mode, "youtube");
+  }
+
+  if (isInstagramUrl(payload.url)) {
+    return streamYouTube(payload.url, req, res, "video", "instagram");
   }
 
   return sendJson(res, 400, {
-    error: "URL não suportada. Envie um link HTTPS do TikTok ou YouTube."
+    error: "URL não suportada. Envie um link HTTPS do TikTok, YouTube ou Instagram."
   });
 });
 
