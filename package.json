@@ -10,7 +10,5 @@
   "engines": {
     "node": ">=20"
   },
-  "dependencies": {
-    "pinterest-dlp": "*"
-  }
+  "dependencies": {}
 }
