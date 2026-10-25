@@ -3,12 +3,14 @@
   "version": "3.1.0",
   "private": true,
   "type": "module",
-  "description": "API Node.js nativa para TikTok via TikWM, YouTube via yt-dlp e busca pública de imagens do Pinterest",
+  "description": "API Node.js nativa para TikTok via TikWM, YouTube via yt-dlp e Pinterest via pinterest-dlp",
   "scripts": {
     "start": "node server.js"
   },
   "engines": {
     "node": ">=20"
   },
-  "dependencies": {}
+  "dependencies": {
+    "pinterest-dlp": "*"
+  }
 }
