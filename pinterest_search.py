@@ -2,6 +2,7 @@ import json
 import sys
 from pinterest_dl import PinterestDL
 
+
 def main():
     request = json.load(sys.stdin)
     query = str(request.get("query", "")).strip()[:200]
@@ -12,9 +13,11 @@ def main():
     media = PinterestDL.with_api(timeout=10, verbose=False).search(
         query=query,
         num=max_results,
+        min_resolution=None,
         delay=0.4,
     )
     print(json.dumps([item.to_dict() for item in media], ensure_ascii=False))
+
 
 if __name__ == "__main__":
     try:
