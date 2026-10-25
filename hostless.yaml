@@ -8,7 +8,7 @@ build:
 dockerfile_path: ./Dockerfile
 working_directory: /
 post_build_command: ""
-start_command: sh -c 'uvicorn app:app --host 0.0.0.0 --port ${PORT:-7860}'
+start_command: node server.js
 scaling:
   trigger: http_requests
   min_cpu: 0.01
