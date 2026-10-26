@@ -5,7 +5,9 @@ API HTTP em Node.js nativo, sem Express e sem dependências npm externas. Suport
 ## Endpoints
 
 - `GET /` e `/health`: verificação de saúde.
-- `POST /download`: extrai e transmite um vídeo do TikTok, YouTube ou Instagram.
+- `POST /download`: extrai e transmite mídia do TikTok, YouTube ou Instagram; no YouTube aceita `mode: audio` ou `mode: video`.
+- `POST /youtube/search`: pesquisa um nome no YouTube e devolve metadados do primeiro resultado em JSON.
+- `POST /youtube/playlist`: lê os itens de uma playlist do YouTube e devolve até 100 URLs e títulos em JSON.
 - `POST /pinterest/search`: pesquisa pins no Pinterest usando `pinterest-dl` em modo API, sem instalar navegador.
 
 Todos os endpoints POST exigem o secret `API_KEY` e o cabeçalho `X-API-Key`.
@@ -33,7 +35,7 @@ Instagram Reel público:
 {"url":"https://www.instagram.com/reel/C3EW2ipRfpg/"}
 ```
 
-A resposta bem-sucedida é o vídeo binário. O servidor transmite pelo fluxo HTTP nativo, sem dividir manualmente a resposta em blocos de 64 KB. O limite do vídeo é 500 MiB para TikTok; o YouTube é transmitido em fluxo, sem arquivo temporário, e depende da disponibilidade de um formato MP4 que já contenha áudio e vídeo juntos.
+As rotas `/youtube/search` e `/youtube/playlist` retornam JSON; a playlist é limitada a 100 itens por chamada. A resposta bem-sucedida de `/download` é a mídia binária. O servidor transmite pelo fluxo HTTP nativo, sem dividir manualmente a resposta em blocos de 64 KB. O limite do vídeo é 500 MiB para TikTok; o YouTube é transmitido em fluxo, sem arquivo temporário, e depende da disponibilidade de um formato MP4 que já contenha áudio e vídeo juntos.
 
 ### Pinterest: pesquisar pins
 
