@@ -2,7 +2,7 @@ import http from "node:http";
 import { spawn } from "node:child_process";
 import { Readable, Transform, createReadStream } from "node:stream";
 import { pipeline } from "node:stream/promises";
-import { mkdtemp, readdir, stat, rm } from "node:fs/promises";
+import { mkdtemp, readdir, stat, rm, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import yts from "yt-search";
@@ -114,7 +114,7 @@ async function getYouTubePlaylist(url) {
 
 const PORT = Number(process.env.PORT || 8000);
 const API_KEY = process.env.API_KEY || "";
-const MAX_BODY = 8 * 1024;
+const MAX_BODY = 256 * 1024;
 const MAX_VIDEO_BYTES = 500 * 1024 * 1024;
 const YTDLP = process.env.YTDLP_PATH || "yt-dlp";
 const PYTHON = process.env.PYTHON_PATH || "python";
@@ -294,6 +294,105 @@ async function sendPinterestImage(payload, res) {
     if (!res.headersSent) sendJson(res, 502, { error: "Falha ao baixar a imagem do Pinterest" });
     else if (!res.destroyed) res.destroy(err);
   } finally { clearTimeout(timeout); }
+}
+
+
+async function processStickerPack(payload, res) {
+  if (!Array.isArray(payload.items) || payload.items.length < 1 || payload.items.length > 60) {
+    return sendJson(res, 400, { error: "Informe items com 1 a 60 mídias." });
+  }
+  const workDir = await mkdtemp(join(tmpdir(), "melissa-stickers-"));
+  const results = [];
+  let totalOutput = 0;
+  try {
+    for (let i = 0; i < payload.items.length; i++) {
+      const item = payload.items[i];
+      if (!item || typeof item.src !== "string") {
+        results.push({ index: i, ok: false, error: "URL da mídia inválida" });
+        continue;
+      }
+      let mediaUrl;
+      try { mediaUrl = new URL(item.src); } catch {}
+      if (!mediaUrl || mediaUrl.protocol !== "https:" ||
+          !(mediaUrl.hostname === "pinimg.com" || mediaUrl.hostname.endsWith(".pinimg.com")) ||
+          mediaUrl.username || mediaUrl.password || mediaUrl.port) {
+        results.push({ index: i, ok: false, error: "Apenas URLs HTTPS da CDN do Pinterest são aceitas" });
+        continue;
+      }
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 25_000);
+      timer.unref();
+      try {
+        const upstream = await fetch(mediaUrl, {
+          headers: { "user-agent": "Mozilla/5.0 MelissaDownloaderAPI/3.1" },
+          redirect: "error",
+          signal: controller.signal
+        });
+        if (!upstream.ok || !upstream.body) {
+          results.push({ index: i, ok: false, error: "Falha ao baixar mídia", status: upstream.status });
+          continue;
+        }
+        const type = (upstream.headers.get("content-type") || "").split(";")[0].trim().toLowerCase();
+        if (!type.startsWith("image/") && !type.startsWith("video/")) {
+          await upstream.body.cancel().catch(() => {});
+          results.push({ index: i, ok: false, error: "O endereço não retornou imagem ou vídeo" });
+          continue;
+        }
+        const chunks = [];
+        let bytes = 0;
+        for await (const chunk of Readable.fromWeb(upstream.body)) {
+          bytes += chunk.length;
+          if (bytes > 15 * 1024 * 1024) throw new Error("Mídia excede 15 MiB");
+          chunks.push(chunk);
+        }
+        const input = Buffer.concat(chunks);
+        if (!input.length) throw new Error("Mídia vazia");
+        const inputPath = join(workDir, `input-${i}`);
+        const outputPath = join(workDir, `sticker-${i}.webp`);
+        await writeFile(inputPath, input);
+        const animated = type === "image/gif" || type.startsWith("video/") ||
+          /\.(gif|mp4|webm|mov)(?:[?#]|$)/i.test(mediaUrl.pathname) || item.animated === true;
+        if (animated) {
+          await new Promise((resolve, reject) => {
+            const args = ["-hide_banner", "-loglevel", "error", "-y", "-i", inputPath,
+              "-t", "10", "-vf",
+              "fps=15,scale=512:512:force_original_aspect_ratio=decrease:force_divisible_by=2,pad=512:512:(ow-iw)/2:(oh-ih)/2:color=0x00000000",
+              "-an", "-loop", "0", "-c:v", "libwebp_anim", "-quality", "70",
+              "-compression_level", "4", outputPath];
+            const child = spawn("ffmpeg", args, { stdio: ["ignore", "ignore", "pipe"] });
+            let stderr = "";
+            const timeout = setTimeout(() => child.kill("SIGKILL"), 90_000);
+            child.stderr.on("data", chunk => { stderr = (stderr + chunk.toString()).slice(-2000); });
+            child.on("error", error => { clearTimeout(timeout); reject(error); });
+            child.on("close", code => {
+              clearTimeout(timeout);
+              if (code === 0) resolve();
+              else reject(new Error(stderr || "FFmpeg falhou ao converter a mídia"));
+            });
+          });
+        } else {
+          let image = sharp(input, { limitInputPixels: 40_000_000 }).rotate().resize(512, 512, {
+            fit: "contain", background: { r: 0, g: 0, b: 0, alpha: 0 }
+          });
+          let output = await image.webp({ quality: 80, effort: 3, smartSubsample: true }).toBuffer();
+          if (output.length > 900 * 1024) output = await image.webp({ quality: 55, effort: 4, smartSubsample: true }).toBuffer();
+          await writeFile(outputPath, output);
+        }
+        const output = await readFile(outputPath);
+        if (!output.length || output.length > 900 * 1024) throw new Error("Figurinha processada excede 900 KiB");
+        totalOutput += output.length;
+        if (totalOutput > 20 * 1024 * 1024) throw new Error("O pack processado excedeu 20 MiB");
+        results.push({ index: i, ok: true, contentType: "image/webp", data: output.toString("base64"), animated });
+      } catch (error) {
+        results.push({ index: i, ok: false, error: String(error?.message || "Falha ao processar mídia").slice(0, 250) });
+      } finally {
+        clearTimeout(timer);
+      }
+    }
+    return sendJson(res, 200, { ok: true, total: payload.items.length, processed: results.filter(x => x.ok).length, results });
+  } finally {
+    await rm(workDir, { recursive: true, force: true }).catch(() => {});
+  }
 }
 
 function sendJson(res, status, body) {
@@ -972,11 +1071,11 @@ const server = http.createServer(async (req, res) => {
       service: "melissa-downloader-api",
       runtime: "node",
       port: PORT,
-      endpoints: ["POST /download", "POST /youtube/search", "POST /youtube/playlist", "POST /pinterest/search", "POST /pinterest/image"]
+      endpoints: ["POST /download", "POST /youtube/search", "POST /youtube/playlist", "POST /pinterest/search", "POST /pinterest/image", "POST /media/process-pack"]
     });
   }
 
-  if (req.method !== "POST" || !["/download", "/pinterest/search", "/pinterest/image", "/youtube/search", "/youtube/playlist"].includes(pathname)) {
+  if (req.method !== "POST" || !["/download", "/pinterest/search", "/pinterest/image", "/youtube/search", "/youtube/playlist", "/media/process-pack"].includes(pathname)) {
     return sendJson(res, 404, { error: "Rota não encontrada" });
   }
 
@@ -1016,7 +1115,7 @@ const server = http.createServer(async (req, res) => {
     }
   }
 
-  if (pathname === "/pinterest/image") return sendPinterestImage(payload, res);
+  if (pathname === "/pinterest/image") return sendPinterestImage(payload, res);\n  if (pathname === "/media/process-pack") return processStickerPack(payload, res);
 
   if (pathname === "/pinterest/search") {
     if (typeof payload.query !== "string" || !payload.query.trim()) {
