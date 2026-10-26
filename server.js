@@ -1007,12 +1007,94 @@ async function streamYouTubeMergedFallback(videoUrl, res, metadata) {
   }
 }
 
+async function streamYouTubeAudioM4a(videoUrl, res, metadata = null) {
+  // Gera um M4A/AAC completo antes de responder, evitando MIME/extensão incompatíveis.
+  const directory = await mkdtemp(join(tmpdir(), "youtube-audio-"));
+  let activeChild = null;
+  let timedOut = false;
+  const run = (command, args, label) => new Promise((resolve, reject) => {
+    let stderr = "";
+    let settled = false;
+    const finish = error => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      error ? reject(error) : resolve();
+    };
+    activeChild = spawn(command, args, { stdio: ["ignore", "ignore", "pipe"] });
+    const timeout = setTimeout(() => {
+      timedOut = true;
+      activeChild.kill("SIGTERM");
+      setTimeout(() => {
+        if (activeChild && activeChild.exitCode === null) activeChild.kill("SIGKILL");
+      }, 1500).unref();
+      finish(new Error("Tempo limite excedido ao " + label));
+    }, YTDLP_TIMEOUT_MS);
+    timeout.unref();
+    activeChild.stderr.setEncoding("utf8");
+    activeChild.stderr.on("data", chunk => { stderr = (stderr + chunk).slice(-3000); });
+    activeChild.once("error", error => finish(error));
+    activeChild.once("close", code => {
+      if (code === 0) finish();
+      else finish(new Error((timedOut ? "Tempo limite; " : "") + (stderr.trim() || label + " terminou com código " + code)));
+    });
+    res.once("close", () => {
+      if (!res.writableEnded && activeChild && activeChild.exitCode === null) activeChild.kill("SIGTERM");
+    });
+  });
+
+  try {
+    await run(YTDLP, [
+      "--no-playlist", "--no-warnings", "--no-progress",
+      "--js-runtimes", "node", "--remote-components", "ejs:github",
+      "--max-filesize", "500M",
+      "-f", "bestaudio/best",
+      "-o", join(directory, "source.%(ext)s"),
+      "--", videoUrl
+    ], "baixar o áudio do YouTube");
+
+    const files = await readdir(directory);
+    const sourceName = files.find(name => name.startsWith("source.") && !/\.(part|ytdl)$/i.test(name));
+    if (!sourceName) throw new Error("yt-dlp terminou sem gerar o arquivo de áudio");
+    const sourcePath = join(directory, sourceName);
+    const outputPath = join(directory, "audio.m4a");
+
+    await run("ffmpeg", [
+      "-hide_banner", "-loglevel", "error", "-y",
+      "-i", sourcePath, "-vn", "-map", "0:a:0",
+      "-c:a", "aac", "-b:a", "128k", "-ar", "44100", "-ac", "2",
+      "-movflags", "+faststart", "-f", "ipod", outputPath
+    ], "converter o áudio para M4A/AAC");
+
+    const info = await stat(outputPath);
+    if (!info.isFile() || info.size <= 0) throw new Error("FFmpeg gerou um M4A vazio");
+    if (info.size > 500 * 1024 * 1024) throw new Error("O áudio convertido excede o limite de 500 MiB");
+    if (res.destroyed) return;
+
+    res.writeHead(200, {
+      "content-type": "audio/mp4",
+      "content-disposition": 'attachment; filename="audio.m4a"',
+      "content-length": String(info.size),
+      "cache-control": "no-store",
+      "x-content-type-options": "nosniff",
+      "x-audio-format": "m4a-aac",
+      ...metadataHeaders(metadata)
+    });
+    await pipeline(createReadStream(outputPath), res);
+    console.log("Áudio do YouTube convertido para M4A/AAC", { bytes: info.size });
+  } finally {
+    if (activeChild && activeChild.exitCode === null) activeChild.kill("SIGTERM");
+    await rm(directory, { recursive: true, force: true }).catch(() => {});
+  }
+}
+
 async function streamYouTube(videoUrl, req, res, mode = "video", platform = "youtube", useImpersonation = false) {
   let metadata = null;
   try { metadata = await getYtDlpMetadata(videoUrl, platform, useImpersonation); }
   catch (error) { console.warn("Metadados indisponíveis:", error.message); }
   const isAudio = mode === "audio";
   const isInstagram = platform === "instagram";
+  if (isAudio && !isInstagram) return streamYouTubeAudioM4a(videoUrl, res, metadata);
   // O YouTube nem sempre oferece um formato combinado moderno; o formato 18
   // costuma ser MP4 com áudio+vídeo em um único fluxo, adequado para streaming.
   // Mantemos um fallback combinado para vídeos em que o formato 18 não existe.
