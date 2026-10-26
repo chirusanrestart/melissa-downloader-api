@@ -1056,6 +1056,8 @@ async function streamYouTubeAudioM4a(videoUrl, res, metadata = null) {
       "--no-playlist", "--no-warnings", "--no-progress",
       "--js-runtimes", "node", "--remote-components", "ejs:github",
       "--max-filesize", "500M",
+      // Aceita qualquer contêiner/codec de áudio disponível; o FFmpeg
+      // normaliza tudo para M4A/AAC depois do download.
       "-f", "bestaudio/best",
       "-o", join(directory, "source.%(ext)s"),
       "--", videoUrl
@@ -1063,14 +1065,17 @@ async function streamYouTubeAudioM4a(videoUrl, res, metadata = null) {
     try {
       await run(YTDLP, downloadArgs, "baixar o áudio do YouTube");
     } catch (firstError) {
-      // O YouTube pode bloquear a extração comum. Tenta novamente com
-      // impersonação de navegador antes de recorrer ao fallback remoto.
       console.warn("Download de áudio falhou sem impersonação; tentando Chrome:", firstError.message);
-      await run(YTDLP, [
-        ...downloadArgs.slice(0, -2),
+      const retryArgs = [
+        "--no-playlist", "--no-warnings", "--no-progress",
+        "--js-runtimes", "node", "--remote-components", "ejs:github",
+        "--max-filesize", "500M",
+        "-f", "bestaudio/best",
         "--impersonate", "chrome",
-        ...downloadArgs.slice(-2)
-      ], "baixar o áudio do YouTube com impersonação Chrome");
+        "-o", join(directory, "source.%(ext)s"),
+        "--", videoUrl
+      ];
+      await run(YTDLP, retryArgs, "baixar o áudio do YouTube com impersonação Chrome");
     }
 
     const files = await readdir(directory);
