@@ -1082,6 +1082,16 @@ async function streamYouTubeAudioM4a(videoUrl, res, metadata = null) {
     });
     await pipeline(createReadStream(outputPath), res);
     console.log("Áudio do YouTube convertido para M4A/AAC", { bytes: info.size });
+  } catch (error) {
+    console.error("Falha ao preparar áudio M4A:", error.message);
+    if (!res.headersSent && !res.destroyed) {
+      sendJson(res, 502, {
+        error: "Falha ao converter o áudio do YouTube para M4A/AAC",
+        details: String(error.message || "Erro desconhecido").slice(0, 900)
+      });
+    } else if (!res.destroyed) {
+      res.destroy(error);
+    }
   } finally {
     if (activeChild && activeChild.exitCode === null) activeChild.kill("SIGTERM");
     await rm(directory, { recursive: true, force: true }).catch(() => {});
