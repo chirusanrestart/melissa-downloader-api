@@ -1,6 +1,7 @@
 import http from "node:http";
 import { spawn } from "node:child_process";
-import { Readable, Transform, createReadStream } from "node:stream";
+import { Readable, Transform } from "node:stream";
+import { createReadStream } from "node:fs";
 import { pipeline } from "node:stream/promises";
 import { mkdtemp, readdir, stat, rm, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
