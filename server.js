@@ -125,6 +125,21 @@ async function downloadYouTubePlaylist(payload, res) {
 
     const files = (await readdir(directory)).filter(name => /\.m4a$/i.test(name)).sort((a, b) => a.localeCompare(b, "en", { numeric: true }));
     if (!files.length) throw new Error("A playlist não gerou arquivos M4A");
+
+    // O Hostless tem disco temporário limitado. Limita o tamanho agregado antes de iniciar o ZIP.
+    const MAX_PLAYLIST_BYTES = 300 * 1024 * 1024;
+    let totalBytes = 0;
+    for (const name of files) {
+      const info = await stat(join(directory, name));
+      totalBytes += info.size;
+      if (totalBytes > MAX_PLAYLIST_BYTES) {
+        return sendJson(res, 413, {
+          error: "A playlist passou do limite total de 300 MiB.",
+          details: "Tente uma playlist menor ou divida a playlist em partes."
+        });
+      }
+    }
+
     const archive = archiver("zip", { zlib: { level: 1 } });
     res.writeHead(200, {
       "content-type": "application/zip",
