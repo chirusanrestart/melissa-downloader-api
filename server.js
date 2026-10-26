@@ -3,6 +3,87 @@ import { spawn } from "node:child_process";
 import { Readable, Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
 
+function runYtDlpJson(args, { timeoutMs = 60_000, maxOutputBytes = 2 * 1024 * 1024 } = {}) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(YTDLP, [
+      "--no-warnings", "--js-runtimes", "node", "--remote-components", "ejs:github",
+      ...args
+    ], { stdio: ["ignore", "pipe", "pipe"] });
+    let stdout = "";
+    let stderr = "";
+    let settled = false;
+    const timeout = setTimeout(() => {
+      child.kill("SIGTERM");
+      if (child.exitCode === null) child.kill("SIGKILL");
+      finish(new Error("Tempo limite do yt-dlp excedido"));
+    }, timeoutMs);
+    timeout.unref();
+    const finish = (error, value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      error ? reject(error) : resolve(value);
+    };
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    child.stdout.on("data", chunk => {
+      stdout += chunk;
+      if (Buffer.byteLength(stdout) > maxOutputBytes) {
+        child.kill("SIGTERM");
+        finish(new Error("Resposta do YouTube excedeu o limite"));
+      }
+    });
+    child.stderr.on("data", chunk => { stderr = (stderr + chunk).slice(-2000); });
+    child.once("error", err => finish(err));
+    child.once("close", code => {
+      if (code !== 0) return finish(new Error(stderr.trim() || `yt-dlp terminou com código ${code}`));
+      try { finish(null, JSON.parse(stdout)); }
+      catch { finish(new Error("yt-dlp retornou JSON inválido")); }
+    });
+  });
+}
+
+async function searchYouTubeByName(query) {
+  const data = await runYtDlpJson([
+    "--dump-single-json", "--skip-download", "--no-playlist",
+    "--", "ytsearch1:" + query
+  ], { timeoutMs: 45_000, maxOutputBytes: 1024 * 1024 });
+  const entries = Array.isArray(data.entries) ? data.entries : [];
+  const video = entries[0] || data;
+  if (!video?.id || !video?.title) throw new Error("Nenhum resultado encontrado no YouTube");
+  return {
+    id: String(video.id),
+    title: String(video.title).slice(0, 500),
+    url: String(video.webpage_url || ("https://www.youtube.com/watch?v=" + video.id)),
+    description: String(video.description || "").slice(0, 3000),
+    thumbnail: String(video.thumbnail || "").slice(0, 2000),
+    duration: Number(video.duration || 0) || null
+  };
+}
+
+async function getYouTubePlaylist(url) {
+  const data = await runYtDlpJson([
+    "--flat-playlist", "--dump-single-json", "--skip-download",
+    "--playlist-end", "100", "--", url
+  ], { timeoutMs: 90_000, maxOutputBytes: 4 * 1024 * 1024 });
+  const entries = Array.isArray(data.entries) ? data.entries : [];
+  const tracks = entries.filter(item => item && item.id).map((item, index) => ({
+    id: String(item.id),
+    title: String(item.title || ("Vídeo " + (index + 1))).slice(0, 300),
+    url: String(item.url || item.webpage_url || ("https://www.youtube.com/watch?v=" + item.id)),
+    thumbnail: String(item.thumbnails?.at?.(-1)?.url || item.thumbnail || "").slice(0, 2000),
+    duration: Number(item.duration || 0) || null
+  }));
+  if (!tracks.length) throw new Error("Nenhum vídeo encontrado nessa playlist");
+  return {
+    title: String(data.title || "Playlist do YouTube").slice(0, 300),
+    total: tracks.length,
+    limited: tracks.length >= 100,
+    tracks
+  };
+}
+
+
 
 const PORT = Number(process.env.PORT || 8000);
 const API_KEY = process.env.API_KEY || "";
@@ -745,11 +826,11 @@ const server = http.createServer(async (req, res) => {
       service: "melissa-downloader-api",
       runtime: "node",
       port: PORT,
-      endpoints: ["POST /download", "POST /pinterest/search", "POST /pinterest/image"]
+      endpoints: ["POST /download", "POST /youtube/search", "POST /youtube/playlist", "POST /pinterest/search", "POST /pinterest/image"]
     });
   }
 
-  if (req.method !== "POST" || !["/download", "/pinterest/search", "/pinterest/image"].includes(pathname)) {
+  if (req.method !== "POST" || !["/download", "/pinterest/search", "/pinterest/image", "/youtube/search", "/youtube/playlist"].includes(pathname)) {
     return sendJson(res, 404, { error: "Rota não encontrada" });
   }
 
@@ -762,6 +843,31 @@ const server = http.createServer(async (req, res) => {
     payload = await readJson(req);
   } catch (err) {
     return sendJson(res, err.statusCode || 400, { error: err.message });
+  }
+
+
+  if (pathname === "/youtube/search") {
+    if (typeof payload.query !== "string" || !payload.query.trim()) {
+      return sendJson(res, 400, { error: "Informe o nome no campo query" });
+    }
+    try {
+      const result = await searchYouTubeByName(payload.query.trim().slice(0, 200));
+      return sendJson(res, 200, { ok: true, result });
+    } catch (err) {
+      return sendJson(res, 502, { error: "Falha na pesquisa do YouTube", details: String(err.message || "").slice(0, 500) });
+    }
+  }
+
+  if (pathname === "/youtube/playlist") {
+    if (typeof payload.url !== "string" || !isYouTubeUrl(payload.url)) {
+      return sendJson(res, 400, { error: "Informe uma URL válida do YouTube no campo url" });
+    }
+    try {
+      const result = await getYouTubePlaylist(payload.url);
+      return sendJson(res, 200, { ok: true, ...result });
+    } catch (err) {
+      return sendJson(res, 502, { error: "Falha ao ler a playlist do YouTube", details: String(err.message || "").slice(0, 500) });
+    }
   }
 
   if (pathname === "/pinterest/image") return sendPinterestImage(payload, res);
