@@ -6,6 +6,7 @@ import { mkdtemp, readdir, stat, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import yts from "yt-search";
+import sharp from "sharp";
 
 function runYtDlpJson(args, { timeoutMs = 60_000, maxOutputBytes = 2 * 1024 * 1024 } = {}) {
   return new Promise((resolve, reject) => {
@@ -238,22 +239,52 @@ async function sendPinterestImage(payload, res) {
       await upstream.body.cancel().catch(() => {});
       return sendJson(res, 413, { error: "Imagem excede o limite de 15 MiB" });
     }
+
+    // GIFs continuam animados e seguem o caminho antigo do bot.
+    // Imagens estáticas são normalizadas no servidor para WebP 512x512.
+    const chunks = [];
+    let bytes = 0;
+    for await (const chunk of Readable.fromWeb(upstream.body)) {
+      bytes += chunk.length;
+      if (bytes > maxImageBytes) {
+        return sendJson(res, 413, { error: "Imagem excedeu o limite de 15 MiB" });
+      }
+      chunks.push(chunk);
+    }
+    if (!bytes) return sendJson(res, 502, { error: "O Pinterest retornou uma imagem vazia" });
+    const input = Buffer.concat(chunks);
+    if (contentType === "image/gif" || /\\.gif(?:[?#]|$)/i.test(imageUrl.pathname)) {
+      res.writeHead(200, {
+        "content-type": "image/gif",
+        "content-disposition": 'inline; filename="pinterest-image.gif"',
+        "cache-control": "no-store",
+        "x-content-type-options": "nosniff",
+        "content-length": String(input.length)
+      });
+      return res.end(input);
+    }
+
+    const output = await sharp(input, { limitInputPixels: 40_000_000 })
+      .rotate()
+      .resize(512, 512, {
+        fit: "contain",
+        background: { r: 0, g: 0, b: 0, alpha: 0 },
+        withoutEnlargement: false
+      })
+      .webp({ quality: 80, effort: 3, smartSubsample: true })
+      .toBuffer();
+
     res.writeHead(200, {
-      "content-type": contentType,
-      "content-disposition": 'inline; filename="pinterest-image"',
+      "content-type": "image/webp",
+      "content-disposition": 'inline; filename="pinterest-sticker.webp"',
       "cache-control": "no-store",
       "x-content-type-options": "nosniff",
-      ...(declaredLength ? { "content-length": String(declaredLength) } : {})
+      "content-length": String(output.length),
+      "x-sticker-prepared": "1",
+      "x-sticker-width": "512",
+      "x-sticker-height": "512"
     });
-    let bytes = 0;
-    const sizeGuard = new Transform({
-      transform(chunk, encoding, callback) {
-        bytes += chunk.length;
-        if (bytes > maxImageBytes) return callback(new Error("Imagem excedeu o limite de 15 MiB"));
-        callback(null, chunk);
-      }
-    });
-    await pipeline(Readable.fromWeb(upstream.body), sizeGuard, res);
+    return res.end(output);
   } catch (err) {
     if (res.destroyed || err.name === "AbortError") return;
     if (!res.headersSent) sendJson(res, 502, { error: "Falha ao baixar a imagem do Pinterest" });
