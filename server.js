@@ -452,10 +452,23 @@ async function streamViaVideoScale(videoUrl, res, mode) {
     `${VIDEOSCALE_BASE_URL}/api/download/${encodeURIComponent(taskId)}`,
     { method: "GET" }
   );
-  const mediaUrl = findDeepString(downloadPayload, ["download_url", "downloadUrl", "direct_url", "directUrl", "file_url", "fileUrl"]);
+  const mediaUrl = findDeepStringChildFirst(downloadPayload, [
+    "download_url", "downloadUrl", "direct_url", "directUrl",
+    "file_url", "fileUrl", "media_url", "mediaUrl", "url"
+  ]);
   if (!mediaUrl || mediaUrl === videoUrl) throw new Error("VideoScale não retornou uma URL de mídia");
-  const parsedMediaUrl = new URL(mediaUrl);
-  if (parsedMediaUrl.protocol !== "https:") throw new Error("VideoScale retornou uma URL de mídia não segura");
+  let parsedMediaUrl;
+  try {
+    parsedMediaUrl = new URL(mediaUrl, VIDEOSCALE_BASE_URL);
+  } catch {
+    throw new Error("VideoScale retornou uma URL de mídia inválida");
+  }
+  // Algumas respostas retornam URLs HTTP ou relativas. Converte HTTP para HTTPS,
+  // sem aceitar credenciais embutidas nem protocolos diferentes de HTTP(S).
+  if (parsedMediaUrl.protocol === "http:") parsedMediaUrl.protocol = "https:";
+  if (parsedMediaUrl.protocol !== "https:" || parsedMediaUrl.username || parsedMediaUrl.password) {
+    throw new Error("VideoScale retornou uma URL de mídia não segura");
+  }
 
   if (mode === "audio") {
     const ffmpeg = spawn(process.env.FFMPEG_PATH || "ffmpeg", [
@@ -525,12 +538,13 @@ async function streamViaVideoScale(videoUrl, res, mode) {
   console.log("VideoScale fallback concluído", { mode });
 }
 
-function getYtDlpMetadata(videoUrl, platform) {
+function getYtDlpMetadata(videoUrl, platform, useImpersonation = false) {
   return new Promise((resolve, reject) => {
     const args = [
       "--no-playlist", "--no-warnings", "--dump-single-json", "--skip-download",
       "--js-runtimes", "node", "--remote-components", "ejs:github",
-      "--impersonate", "chrome", "--", videoUrl
+      ...(useImpersonation ? ["--impersonate", "chrome"] : []),
+      "--", videoUrl
     ];
     const child = spawn(YTDLP, args, { stdio: ["ignore", "pipe", "pipe"] });
     let stdout = "";
@@ -578,9 +592,9 @@ function metadataHeaders(metadata) {
   return headers;
 }
 
-async function streamYouTube(videoUrl, req, res, mode = "video", platform = "youtube") {
+async function streamYouTube(videoUrl, req, res, mode = "video", platform = "youtube", useImpersonation = false) {
   let metadata = null;
-  try { metadata = await getYtDlpMetadata(videoUrl, platform); }
+  try { metadata = await getYtDlpMetadata(videoUrl, platform, useImpersonation); }
   catch (error) { console.warn("Metadados indisponíveis:", error.message); }
   const isAudio = mode === "audio";
   const isInstagram = platform === "instagram";
@@ -597,9 +611,8 @@ async function streamYouTube(videoUrl, req, res, mode = "video", platform = "you
     "--no-progress",
     "--js-runtimes", "node",
     "--remote-components", "ejs:github",
-    ...(isInstagram
-      ? ["--impersonate", "chrome", "--extractor-retries", "2"]
-      : ["--impersonate", "chrome"]),
+    ...(isInstagram ? ["--extractor-retries", "2"] : []),
+    ...(useImpersonation ? ["--impersonate", "chrome"] : []),
     "-f", outputFormat,
     "-o", "-",
     "--",
@@ -670,7 +683,14 @@ async function streamYouTube(videoUrl, req, res, mode = "video", platform = "you
       return;
     }
 
-    console.error("yt-dlp falhou:", { code, signal, stderr });
+    console.error("yt-dlp falhou:", { code, signal, stderr, impersonation: useImpersonation });
+    // Primeira tentativa sem curl_cffi/impersonação. Só tenta o navegador depois
+    // de uma falha limpa, antes de qualquer byte ter sido enviado ao cliente.
+    if (!useImpersonation && !res.headersSent && !res.destroyed) {
+      console.log("Tentando novamente yt-dlp com impersonação Chrome (curl_cffi)");
+      await streamYouTube(videoUrl, req, res, mode, platform, true);
+      return;
+    }
     if (!isInstagram && !res.headersSent && !res.destroyed && VIDEOSCALE_USERNAME && VIDEOSCALE_PASSWORD) {
       console.log("Tentando fallback VideoScale após falha do yt-dlp", { mode });
       try {
