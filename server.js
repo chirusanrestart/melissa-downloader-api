@@ -45,7 +45,7 @@ function runYtDlpJson(args, { timeoutMs = 60_000, maxOutputBytes = 2 * 1024 * 10
 
 async function searchYouTubeByName(query) {
   const data = await runYtDlpJson([
-    "--dump-single-json", "--skip-download", "--no-playlist",
+    "--dump-single-json", "--skip-download",
     "--", "ytsearch1:" + query
   ], { timeoutMs: 45_000, maxOutputBytes: 1024 * 1024 });
   const entries = Array.isArray(data.entries) ? data.entries : [];
@@ -70,7 +70,7 @@ async function getYouTubePlaylist(url) {
   const tracks = entries.filter(item => item && item.id).map((item, index) => ({
     id: String(item.id),
     title: String(item.title || ("Vídeo " + (index + 1))).slice(0, 300),
-    url: String(item.url || item.webpage_url || ("https://www.youtube.com/watch?v=" + item.id)),
+    url: "https://www.youtube.com/watch?v=" + item.id,
     thumbnail: String(item.thumbnails?.at?.(-1)?.url || item.thumbnail || "").slice(0, 2000),
     duration: Number(item.duration || 0) || null
   }));
