@@ -2,6 +2,7 @@ import http from "node:http";
 import { spawn } from "node:child_process";
 import { Readable, Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
+import yts from "yt-search";
 
 function runYtDlpJson(args, { timeoutMs = 60_000, maxOutputBytes = 2 * 1024 * 1024 } = {}) {
   return new Promise((resolve, reject) => {
@@ -44,9 +45,31 @@ function runYtDlpJson(args, { timeoutMs = 60_000, maxOutputBytes = 2 * 1024 * 10
 }
 
 async function searchYouTubeByName(query) {
+  const normalizedQuery = String(query || "").trim().slice(0, 200);
+  if (!normalizedQuery) throw new Error("Informe o nome para pesquisar no YouTube");
+
+  // Pesquisa principal via yt-search, sem precisar executar yt-dlp para localizar o vídeo.
+  try {
+    const results = await yts(normalizedQuery);
+    const video = results?.videos?.[0];
+    if (video?.videoId && video?.title) {
+      return {
+        id: String(video.videoId),
+        title: String(video.title).slice(0, 500),
+        url: String(video.url || ("https://www.youtube.com/watch?v=" + video.videoId)),
+        description: String(video.description || "").slice(0, 3000),
+        thumbnail: String(video.thumbnail || "").slice(0, 2000),
+        duration: Number(video.seconds || 0) || null
+      };
+    }
+  } catch (error) {
+    console.warn("yt-search falhou; tentando pesquisa via yt-dlp:", error.message);
+  }
+
+  // Fallback se a pesquisa por yt-search falhar.
   const data = await runYtDlpJson([
     "--dump-single-json", "--skip-download",
-    "--", "ytsearch1:" + query
+    "--", "ytsearch1:" + normalizedQuery
   ], { timeoutMs: 45_000, maxOutputBytes: 1024 * 1024 });
   const entries = Array.isArray(data.entries) ? data.entries : [];
   const video = entries[0] || data;
