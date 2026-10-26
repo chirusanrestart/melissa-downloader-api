@@ -104,9 +104,9 @@ async function downloadYouTubePlaylist(payload, res) {
       let settled = false;
       const finish = error => { if (settled) return; settled = true; clearTimeout(timeout); error ? reject(error) : resolve(); };
       child = spawn(YTDLP, [
-        "--yes-playlist", "--playlist-end", "100", "--no-warnings", "--no-progress",
+        "--yes-playlist", "--playlist-end", "30", "--no-warnings", "--no-progress",
         "--js-runtimes", "node", "--remote-components", "ejs:github",
-        "--max-filesize", "500M", "-f", "bestaudio/best",
+        "--max-filesize", "12M", "-f", "bestaudio/best",
         "--extract-audio", "--audio-format", "m4a", "--audio-quality", "5",
         "-o", join(directory, "%(playlist_index)03d - %(title).120B.%(ext)s"), "--", payload.url
       ], { stdio: ["ignore", "ignore", "pipe"] });
