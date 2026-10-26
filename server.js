@@ -578,7 +578,10 @@ function metadataHeaders(metadata) {
   return headers;
 }
 
-async function streamYouTube(videoUrl, req, res, mode = "video", platform = "youtube") {\n  let metadata = null;\n  try { metadata = await getYtDlpMetadata(videoUrl, platform); }\n  catch (error) { console.warn("Metadados indisponíveis:", error.message); }
+async function streamYouTube(videoUrl, req, res, mode = "video", platform = "youtube") {
+  let metadata = null;
+  try { metadata = await getYtDlpMetadata(videoUrl, platform); }
+  catch (error) { console.warn("Metadados indisponíveis:", error.message); }
   const isAudio = mode === "audio";
   const isInstagram = platform === "instagram";
   const outputFormat = isInstagram
