@@ -104,17 +104,17 @@ async function downloadYouTubePlaylist(payload, res) {
       let settled = false;
       const finish = error => { if (settled) return; settled = true; clearTimeout(timeout); error ? reject(error) : resolve(); };
       child = spawn(YTDLP, [
-        "--yes-playlist", "--playlist-end", "30", "--no-warnings", "--no-progress",
+        "--yes-playlist", "--playlist-end", "100", "--no-warnings", "--no-progress",
         "--js-runtimes", "node", "--remote-components", "ejs:github",
-        "--max-filesize", "12M", "-f", "bestaudio/best",
+        "--max-filesize", "100M", "-f", "bestaudio/best",
         "--extract-audio", "--audio-format", "m4a", "--audio-quality", "5",
         "-o", join(directory, "%(playlist_index)03d - %(title).120B.%(ext)s"), "--", payload.url
       ], { stdio: ["ignore", "ignore", "pipe"] });
       const timeout = setTimeout(() => {
         child.kill("SIGTERM");
         setTimeout(() => { if (child.exitCode === null) child.kill("SIGKILL"); }, 2000).unref();
-        finish(new Error("Tempo limite baixando a playlist (15 minutos)"));
-      }, 900000);
+        finish(new Error("Tempo limite baixando a playlist (30 minutos)"));
+      }, 1800000);
       timeout.unref();
       child.stderr.setEncoding("utf8");
       child.stderr.on("data", chunk => { stderr = (stderr + chunk).slice(-4000); });
