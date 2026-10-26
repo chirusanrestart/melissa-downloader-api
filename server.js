@@ -1115,7 +1115,8 @@ const server = http.createServer(async (req, res) => {
     }
   }
 
-  if (pathname === "/pinterest/image") return sendPinterestImage(payload, res);\n  if (pathname === "/media/process-pack") return processStickerPack(payload, res);
+  if (pathname === "/pinterest/image") return sendPinterestImage(payload, res);
+  if (pathname === "/media/process-pack") return processStickerPack(payload, res);
 
   if (pathname === "/pinterest/search") {
     if (typeof payload.query !== "string" || !payload.query.trim()) {
