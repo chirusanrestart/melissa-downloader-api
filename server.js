@@ -1,7 +1,10 @@
 import http from "node:http";
 import { spawn } from "node:child_process";
-import { Readable, Transform } from "node:stream";
+import { Readable, Transform, createReadStream } from "node:stream";
 import { pipeline } from "node:stream/promises";
+import { mkdtemp, readdir, stat, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import yts from "yt-search";
 
 function runYtDlpJson(args, { timeoutMs = 60_000, maxOutputBytes = 2 * 1024 * 1024 } = {}) {
@@ -696,6 +699,76 @@ function metadataHeaders(metadata) {
   return headers;
 }
 
+async function streamYouTubeMergedFallback(videoUrl, res, metadata) {
+  // Último recurso para vídeos sem formato combinado: o yt-dlp baixa os fluxos
+  // separados e usa FFmpeg para muxar sem recodificar. O fallback usa disco
+  // temporário apenas quando a transmissão direta falha.
+  const directory = await mkdtemp(join(tmpdir(), "yt-merge-"));
+  let child;
+  let stderr = "";
+  let timedOut = false;
+  const args = [
+    "--no-playlist", "--no-warnings", "--no-progress",
+    "--js-runtimes", "node", "--remote-components", "ejs:github",
+    "--max-filesize", "500M",
+    "-f", "bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best[ext=mp4]",
+    "--merge-output-format", "mp4",
+    "-o", join(directory, "video.%(ext)s"),
+    "--", videoUrl
+  ];
+  try {
+    await new Promise((resolve, reject) => {
+      let settled = false;
+      const finish = (error) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timeout);
+        error ? reject(error) : resolve();
+      };
+      child = spawn(YTDLP, args, { stdio: ["ignore", "ignore", "pipe"] });
+      const timeout = setTimeout(() => {
+        timedOut = true;
+        child.kill("SIGTERM");
+        setTimeout(() => { if (child.exitCode === null) child.kill("SIGKILL"); }, 2000).unref();
+        finish(new Error("Tempo limite do fallback FFmpeg excedido"));
+      }, YTDLP_TIMEOUT_MS);
+      timeout.unref();
+      child.stderr.setEncoding("utf8");
+      child.stderr.on("data", chunk => { stderr = (stderr + chunk).slice(-3000); });
+      child.once("error", error => finish(error));
+      child.once("close", code => {
+        if (code === 0) finish();
+        else finish(new Error((timedOut ? "Tempo limite; " : "") + (stderr.trim() || `yt-dlp/FFmpeg encerrou com código ${code}`)));
+      });
+      res.once("close", () => {
+        if (!res.writableEnded && child?.exitCode === null) child.kill("SIGTERM");
+      });
+    });
+
+    const files = await readdir(directory);
+    const outputName = files.find(name => name.toLowerCase().endsWith(".mp4"));
+    if (!outputName) throw new Error("FFmpeg não gerou um MP4 combinado; confira se FFmpeg está instalado");
+    const outputPath = join(directory, outputName);
+    const info = await stat(outputPath);
+    if (!info.isFile() || info.size <= 0) throw new Error("O MP4 combinado ficou vazio");
+    if (info.size > MAX_VIDEO_BYTES) throw new Error("Vídeo combinado excede o limite de 500 MiB");
+    if (res.destroyed) return;
+    res.writeHead(200, {
+      "content-type": "video/mp4",
+      "content-disposition": 'attachment; filename="video.mp4"',
+      "content-length": String(info.size),
+      "cache-control": "no-store",
+      "x-content-type-options": "nosniff",
+      ...metadataHeaders(metadata)
+    });
+    await pipeline(createReadStream(outputPath), res);
+    console.log("Fallback de combinação YouTube concluído com FFmpeg", { bytes: info.size });
+  } finally {
+    if (child && child.exitCode === null) child.kill("SIGTERM");
+    await rm(directory, { recursive: true, force: true }).catch(() => {});
+  }
+}
+
 async function streamYouTube(videoUrl, req, res, mode = "video", platform = "youtube", useImpersonation = false) {
   let metadata = null;
   try { metadata = await getYtDlpMetadata(videoUrl, platform, useImpersonation); }
@@ -798,6 +871,18 @@ async function streamYouTube(videoUrl, req, res, mode = "video", platform = "you
       await streamYouTube(videoUrl, req, res, mode, platform, true);
       return;
     }
+    if (platform === "youtube" && mode === "video" && !res.headersSent && !res.destroyed) {
+      console.log("Tentando fallback FFmpeg para combinar áudio e vídeo do YouTube");
+      try {
+        await streamYouTubeMergedFallback(videoUrl, res, metadata);
+        return;
+      } catch (fallbackError) {
+        console.error("Fallback FFmpeg falhou:", fallbackError.message);
+        // Continua para o fallback remoto já existente, se configurado.
+        stderr = (stderr + "\\nFallback FFmpeg: " + fallbackError.message).slice(-4000);
+      }
+    }
+
     if (!isInstagram && !res.headersSent && !res.destroyed && VIDEOSCALE_USERNAME && VIDEOSCALE_PASSWORD) {
       console.log("Tentando fallback VideoScale após falha do yt-dlp", { mode });
       try {
