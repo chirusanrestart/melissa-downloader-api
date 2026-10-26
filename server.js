@@ -1052,14 +1052,26 @@ async function streamYouTubeAudioM4a(videoUrl, res, metadata = null) {
   });
 
   try {
-    await run(YTDLP, [
+    const downloadArgs = [
       "--no-playlist", "--no-warnings", "--no-progress",
       "--js-runtimes", "node", "--remote-components", "ejs:github",
       "--max-filesize", "500M",
       "-f", "bestaudio/best",
       "-o", join(directory, "source.%(ext)s"),
       "--", videoUrl
-    ], "baixar o áudio do YouTube");
+    ];
+    try {
+      await run(YTDLP, downloadArgs, "baixar o áudio do YouTube");
+    } catch (firstError) {
+      // O YouTube pode bloquear a extração comum. Tenta novamente com
+      // impersonação de navegador antes de recorrer ao fallback remoto.
+      console.warn("Download de áudio falhou sem impersonação; tentando Chrome:", firstError.message);
+      await run(YTDLP, [
+        ...downloadArgs.slice(0, -2),
+        "--impersonate", "chrome",
+        ...downloadArgs.slice(-2)
+      ], "baixar o áudio do YouTube com impersonação Chrome");
+    }
 
     const files = await readdir(directory);
     const sourceName = files.find(name => name.startsWith("source.") && !/\.(part|ytdl)$/i.test(name));
