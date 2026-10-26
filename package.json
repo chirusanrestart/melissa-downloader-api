@@ -3,12 +3,14 @@
   "version": "3.1.0",
   "private": true,
   "type": "module",
-  "description": "API Node.js para TikTok via TikWM, YouTube via yt-dlp e pesquisa Pinterest via pinterest-dl",
+  "description": "API Node.js para TikTok via TikWM, YouTube via yt-dlp e yt-search, e pesquisa Pinterest via pinterest-dl",
   "scripts": {
     "start": "node server.js"
   },
   "engines": {
     "node": ">=20"
   },
-  "dependencies": {}
+  "dependencies": {
+    "yt-search": "^2.13.1"
+  }
 }
