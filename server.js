@@ -104,9 +104,9 @@ async function downloadYouTubePlaylist(payload, res) {
       let settled = false;
       const finish = error => { if (settled) return; settled = true; clearTimeout(timeout); error ? reject(error) : resolve(); };
       child = spawn(YTDLP, [
-        "--yes-playlist", "--playlist-end", "20", "--no-warnings", "--no-progress",
+        "--yes-playlist", "--playlist-end", "25", "--no-warnings", "--no-progress",
         "--js-runtimes", "node", "--remote-components", "ejs:github",
-        "--max-filesize", "15M", "-f", "bestaudio/best",
+        "--max-filesize", "18M", "-f", "bestaudio/best",
         "--extract-audio", "--audio-format", "m4a", "--audio-quality", "5",
         "-o", join(directory, "%(playlist_index)03d - %(title).120B.%(ext)s"), "--", payload.url
       ], { stdio: ["ignore", "ignore", "pipe"] });
@@ -127,14 +127,14 @@ async function downloadYouTubePlaylist(payload, res) {
     if (!files.length) throw new Error("A playlist não gerou arquivos M4A");
 
     // O Hostless tem disco temporário limitado. Limita o tamanho agregado antes de iniciar o ZIP.
-    const MAX_PLAYLIST_BYTES = 300 * 1024 * 1024;
+    const MAX_PLAYLIST_BYTES = 400 * 1024 * 1024;
     let totalBytes = 0;
     for (const name of files) {
       const info = await stat(join(directory, name));
       totalBytes += info.size;
       if (totalBytes > MAX_PLAYLIST_BYTES) {
         return sendJson(res, 413, {
-          error: "A playlist passou do limite total de 300 MiB.",
+          error: "A playlist passou do limite total de 400 MiB.",
           details: "Tente uma playlist menor ou divida a playlist em partes."
         });
       }
