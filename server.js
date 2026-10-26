@@ -1267,11 +1267,11 @@ const server = http.createServer(async (req, res) => {
       service: "melissa-downloader-api",
       runtime: "node",
       port: PORT,
-      endpoints: ["POST /download", "POST /youtube/search", "POST /youtube/playlist", "POST /pinterest/search", "POST /pinterest/image", "POST /media/process-pack", "POST /media/sticker", "POST /media/toimg", "POST /media/hd"]
+      endpoints: ["POST /download", "POST /youtube/search", "POST /youtube/playlist", "POST /youtube/playlist/download (faixa individual)", "POST /pinterest/search", "POST /pinterest/image", "POST /media/process-pack", "POST /media/sticker", "POST /media/toimg", "POST /media/hd"]
     });
   }
 
-  if (req.method !== "POST" || !["/download", "/pinterest/search", "/pinterest/image", "/youtube/search", "/youtube/playlist", "/media/process-pack", "/media/sticker", "/media/toimg", "/media/hd"].includes(pathname)) {
+  if (req.method !== "POST" || !["/download", "/pinterest/search", "/pinterest/image", "/youtube/search", "/youtube/playlist", "/youtube/playlist/download", "/media/process-pack", "/media/sticker", "/media/toimg", "/media/hd"].includes(pathname)) {
     return sendJson(res, 404, { error: "Rota não encontrada" });
   }
 
@@ -1309,6 +1309,20 @@ const server = http.createServer(async (req, res) => {
     } catch (err) {
       return sendJson(res, 502, { error: "Falha ao ler a playlist do YouTube", details: String(err.message || "").slice(0, 500) });
     }
+  }
+
+  if (pathname === "/youtube/playlist/download") {
+    if (typeof payload.url !== "string" || !isYouTubeUrl(payload.url)) {
+      return sendJson(res, 400, { error: "Informe a URL de uma faixa do YouTube no campo url" });
+    }
+    let trackUrl;
+    try { trackUrl = new URL(payload.url); } catch {}
+    if (!trackUrl || trackUrl.searchParams.has("list")) {
+      return sendJson(res, 400, { error: "Esta rota recebe uma faixa individual, não o link da playlist inteira" });
+    }
+    const mode = payload.mode === "audio" || payload.audio === true ? "audio" : "video";
+    console.log(`[PLAYLIST DOWNLOAD] Enviando faixa individual como ${mode}: ${trackUrl.hostname}`);
+    return streamYouTube(payload.url, req, res, mode, "youtube");
   }
 
   if (pathname === "/pinterest/image") return sendPinterestImage(payload, res);
