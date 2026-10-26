@@ -115,7 +115,8 @@ async function getYouTubePlaylist(url) {
 
 const PORT = Number(process.env.PORT || 8000);
 const API_KEY = process.env.API_KEY || "";
-const MAX_BODY = 24 * 1024 * 1024;
+const MAX_BODY = 256 * 1024;
+const MAX_MEDIA_BODY = 24 * 1024 * 1024;
 const MAX_VIDEO_BYTES = 500 * 1024 * 1024;
 const YTDLP = process.env.YTDLP_PATH || "yt-dlp";
 const PYTHON = process.env.PYTHON_PATH || "python";
@@ -544,11 +545,11 @@ function isYouTubeUrl(value) {
   }
 }
 
-async function readJson(req) {
+async function readJson(req, maxBody = MAX_BODY) {
   let body = "";
   for await (const chunk of req) {
     body += chunk.toString("utf8");
-    if (Buffer.byteLength(body) > MAX_BODY) {
+    if (Buffer.byteLength(body) > maxBody) {
       const err = new Error("Corpo muito grande");
       err.statusCode = 413;
       throw err;
@@ -1188,7 +1189,7 @@ const server = http.createServer(async (req, res) => {
 
   let payload;
   try {
-    payload = await readJson(req);
+    payload = await readJson(req, pathname.startsWith("/media/") ? MAX_MEDIA_BODY : MAX_BODY);
   } catch (err) {
     return sendJson(res, err.statusCode || 400, { error: err.message });
   }
