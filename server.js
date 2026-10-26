@@ -826,7 +826,7 @@ async function streamViaVideoScale(videoUrl, res, mode) {
       const mediaResponse = await fetch(parsedMediaUrl, {
         headers: { "user-agent": "MelissaDownloaderAPI/3.1" },
         signal: AbortSignal.timeout(60_000),
-        redirect: "error"
+        redirect: "follow"
       });
       if (!mediaResponse.ok || !mediaResponse.body) throw new Error(`VideoScale mídia HTTP ${mediaResponse.status}`);
       let bytes = 0;
