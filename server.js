@@ -66,6 +66,94 @@ function searchPinterest(query, min, max) {
     child.stdin.end(JSON.stringify({ query, min, max }));
   });
 }
+function normalizePinterestImageUrl(value) {
+  try {
+    const url = new URL(value);
+    if (url.protocol !== "https:" || url.hostname !== "i.pinimg.com") return "";
+    url.hash = "";
+    url.search = "";
+    return url.toString();
+  } catch { return ""; }
+}
+
+function dedupePinterestResults(items) {
+  const seen = new Set();
+  const unique = [];
+  for (const item of items) {
+    if (!item || typeof item !== "object" || typeof item.src !== "string") continue;
+    const normalizedSrc = normalizePinterestImageUrl(item.src);
+    if (!normalizedSrc) continue;
+    const id = item.id == null ? "" : String(item.id).trim();
+    const idKey = id ? "id:" + id : "";
+    const srcKey = "src:" + normalizedSrc;
+    if ((idKey && seen.has(idKey)) || seen.has(srcKey)) continue;
+    if (idKey) seen.add(idKey);
+    seen.add(srcKey);
+    unique.push(item);
+  }
+  return unique;
+}
+
+async function sendPinterestImage(payload, res) {
+  if (typeof payload.src !== "string" || !payload.src.trim()) {
+    return sendJson(res, 400, { error: "Informe a URL da imagem no campo src" });
+  }
+  let imageUrl;
+  try { imageUrl = new URL(payload.src); }
+  catch { return sendJson(res, 400, { error: "URL da imagem inválida" }); }
+  if (imageUrl.protocol !== "https:" || imageUrl.hostname !== "i.pinimg.com" ||
+      imageUrl.username || imageUrl.password || imageUrl.port) {
+    return sendJson(res, 400, { error: "Apenas URLs HTTPS de imagens em i.pinimg.com são aceitas" });
+  }
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 20_000);
+  timeout.unref();
+  res.on("close", () => { if (!res.writableEnded) controller.abort(); });
+
+  try {
+    const upstream = await fetch(imageUrl, {
+      headers: { "user-agent": "Mozilla/5.0 MelissaDownloaderAPI/3.1" },
+      redirect: "error",
+      signal: controller.signal
+    });
+    if (!upstream.ok || !upstream.body) {
+      return sendJson(res, 502, { error: "Não foi possível baixar a imagem do Pinterest", upstream_status: upstream.status });
+    }
+    const contentType = (upstream.headers.get("content-type") || "").split(";")[0].trim().toLowerCase();
+    if (!contentType.startsWith("image/")) {
+      await upstream.body.cancel().catch(() => {});
+      return sendJson(res, 502, { error: "O Pinterest não retornou um arquivo de imagem" });
+    }
+    const declaredLength = Number(upstream.headers.get("content-length") || 0);
+    const maxImageBytes = 15 * 1024 * 1024;
+    if (declaredLength > maxImageBytes) {
+      await upstream.body.cancel().catch(() => {});
+      return sendJson(res, 413, { error: "Imagem excede o limite de 15 MiB" });
+    }
+    res.writeHead(200, {
+      "content-type": contentType,
+      "content-disposition": 'inline; filename="pinterest-image"',
+      "cache-control": "no-store",
+      "x-content-type-options": "nosniff",
+      ...(declaredLength ? { "content-length": String(declaredLength) } : {})
+    });
+    let bytes = 0;
+    const sizeGuard = new Transform({
+      transform(chunk, encoding, callback) {
+        bytes += chunk.length;
+        if (bytes > maxImageBytes) return callback(new Error("Imagem excedeu o limite de 15 MiB"));
+        callback(null, chunk);
+      }
+    });
+    await pipeline(Readable.fromWeb(upstream.body), sizeGuard, res);
+  } catch (err) {
+    if (res.destroyed || err.name === "AbortError") return;
+    if (!res.headersSent) sendJson(res, 502, { error: "Falha ao baixar a imagem do Pinterest" });
+    else if (!res.destroyed) res.destroy(err);
+  } finally { clearTimeout(timeout); }
+}
+
 function sendJson(res, status, body) {
   if (res.headersSent || res.destroyed) return;
   res.writeHead(status, { "content-type": "application/json; charset=utf-8" });
@@ -577,11 +665,11 @@ const server = http.createServer(async (req, res) => {
       service: "melissa-downloader-api",
       runtime: "node",
       port: PORT,
-      endpoints: ["POST /download", "POST /pinterest/search"]
+      endpoints: ["POST /download", "POST /pinterest/search", "POST /pinterest/image"]
     });
   }
 
-  if (req.method !== "POST" || !["/download", "/pinterest/search"].includes(pathname)) {
+  if (req.method !== "POST" || !["/download", "/pinterest/search", "/pinterest/image"].includes(pathname)) {
     return sendJson(res, 404, { error: "Rota não encontrada" });
   }
 
@@ -596,28 +684,44 @@ const server = http.createServer(async (req, res) => {
     return sendJson(res, err.statusCode || 400, { error: err.message });
   }
 
+  if (pathname === "/pinterest/image") return sendPinterestImage(payload, res);
+
   if (pathname === "/pinterest/search") {
     if (typeof payload.query !== "string" || !payload.query.trim()) {
       return sendJson(res, 400, { error: "Informe uma busca no campo query" });
     }
-
     const query = payload.query.trim().slice(0, 200);
     const requestedMin = Number(payload.min ?? 1);
     const requestedMax = Number(payload.max ?? 20);
-
     if (!Number.isInteger(requestedMin) || !Number.isInteger(requestedMax)) {
       return sendJson(res, 400, { error: "Os campos min e max devem ser números inteiros" });
     }
-
     const min = Math.max(1, Math.min(60, requestedMin));
     const max = Math.max(1, Math.min(60, requestedMax));
-
-    if (min > max) {
-      return sendJson(res, 400, { error: "O campo min não pode ser maior que max" });
-    }
+    if (min > max) return sendJson(res, 400, { error: "O campo min não pode ser maior que max" });
 
     try {
-      const results = await searchPinterest(query, min, max);
+      const candidates = [];
+      const seenQueries = new Set();
+      const addBatch = async searchQuery => {
+        if (seenQueries.has(searchQuery)) return;
+        seenQueries.add(searchQuery);
+        candidates.push(...await searchPinterest(searchQuery, 1, 60));
+      };
+      await addBatch(query);
+      let results = dedupePinterestResults(candidates).slice(0, max);
+      const refillQueries = [`${query} fotografia`, `${query} paisagem`, `${query} fotos`];
+      for (const refillQuery of refillQueries) {
+        if (results.length >= max) break;
+        try {
+          await addBatch(refillQuery);
+          results = dedupePinterestResults(candidates).slice(0, max);
+        } catch (refillError) {
+          console.warn("Pinterest busca complementar falhou:", refillError.message);
+        }
+      }
+      const uniqueResults = dedupePinterestResults(candidates);
+      results = uniqueResults.slice(0, max);
       return sendJson(res, 200, {
         ok: true,
         source: "pinterest-dlp",
@@ -625,6 +729,8 @@ const server = http.createServer(async (req, res) => {
         min_requested: min,
         max_requested: max,
         count: results.length,
+        duplicates_removed: candidates.length - uniqueResults.length,
+        supplemental_searches: Math.max(0, seenQueries.size - 1),
         min_met: results.length >= min,
         results
       });
