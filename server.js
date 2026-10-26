@@ -816,53 +816,61 @@ async function streamViaVideoScale(videoUrl, res, mode) {
   }
 
   if (mode === "audio") {
-    const ffmpeg = spawn(process.env.FFMPEG_PATH || "ffmpeg", [
-      "-hide_banner", "-loglevel", "error",
-      "-i", parsedMediaUrl.toString(),
-      "-map", "0:a:0", "-vn",
-      "-codec:a", "aac", "-b:a", "128k",
-      "-f", "ipod", "-movflags", "+frag_keyframe+empty_moov", "pipe:1"
-    ], { stdio: ["ignore", "pipe", "pipe"] });
-    let ffmpegError = "";
-    let gotOutput = false;
-    const timeout = setTimeout(() => ffmpeg.kill("SIGTERM"), 180_000);
-    timeout.unref();
-    ffmpeg.stderr.setEncoding("utf8");
-    ffmpeg.stderr.on("data", chunk => { ffmpegError = (ffmpegError + chunk).slice(-2000); });
-    res.on("close", () => {
-      if (!res.writableEnded && ffmpeg.exitCode === null) ffmpeg.kill("SIGTERM");
-    });
-    ffmpeg.stdout.once("data", firstChunk => {
+    // Produz um M4A completo em disco antes de responder. Evita M4A fragmentado
+    // em streaming, que alguns clientes do WhatsApp não conseguem reproduzir.
+    const directory = await mkdtemp(join(tmpdir(), "videoscale-audio-"));
+    const sourcePath = join(directory, "source.media");
+    const outputPath = join(directory, "audio.m4a");
+    let activeChild = null;
+    try {
+      const mediaResponse = await fetch(parsedMediaUrl, {
+        headers: { "user-agent": "MelissaDownloaderAPI/3.1" },
+        signal: AbortSignal.timeout(60_000),
+        redirect: "error"
+      });
+      if (!mediaResponse.ok || !mediaResponse.body) throw new Error(`VideoScale mídia HTTP ${mediaResponse.status}`);
+      let bytes = 0;
+      const limiter = new Transform({ transform(chunk, encoding, callback) {
+        bytes += chunk.length;
+        callback(bytes > 500 * 1024 * 1024 ? new Error("Áudio do VideoScale excede 500 MiB") : null, chunk);
+      }});
+      await pipeline(Readable.fromWeb(mediaResponse.body), limiter, createWriteStream(sourcePath, { flags: "wx" }));
+      if (!bytes) throw new Error("VideoScale retornou áudio vazio");
+      await new Promise((resolve, reject) => {
+        let stderr = "";
+        let settled = false;
+        let timeout;
+        const finish = error => { if (settled) return; settled = true; clearTimeout(timeout); error ? reject(error) : resolve(); };
+        activeChild = spawn(process.env.FFMPEG_PATH || "ffmpeg", [
+          "-hide_banner", "-loglevel", "error", "-y", "-i", sourcePath,
+          "-map", "0:a:0", "-vn", "-c:a", "aac", "-b:a", "128k",
+          "-ar", "44100", "-ac", "2", "-movflags", "+faststart", "-f", "ipod", outputPath
+        ], { stdio: ["ignore", "ignore", "pipe"] });
+        timeout = setTimeout(() => { activeChild.kill("SIGTERM"); finish(new Error("Tempo limite convertendo áudio VideoScale")); }, 180_000);
+        timeout.unref();
+        activeChild.stderr.setEncoding("utf8");
+        activeChild.stderr.on("data", chunk => { stderr = (stderr + chunk).slice(-2000); });
+        activeChild.once("error", finish);
+        activeChild.once("close", (code, signal) => code === 0 ? finish() : finish(new Error(`FFmpeg falhou (${code}/${signal || "sem sinal"}): ${stderr.slice(-800)}`)));
+      });
+      const info = await stat(outputPath);
+      if (!info.isFile() || info.size <= 0) throw new Error("FFmpeg gerou M4A vazio");
+      if (info.size > 500 * 1024 * 1024) throw new Error("Áudio convertido excede 500 MiB");
       if (res.destroyed) return;
-      gotOutput = true;
       res.writeHead(200, {
         "content-type": "audio/mp4",
         "content-disposition": 'attachment; filename="audio.m4a"',
+        "content-length": String(info.size),
         "cache-control": "no-store",
-        "x-content-type-options": "nosniff"
+        "x-content-type-options": "nosniff",
+        "x-audio-format": "m4a-aac"
       });
-      if (!res.write(firstChunk)) ffmpeg.stdout.pause();
-      ffmpeg.stdout.pipe(res);
-    });
-    ffmpeg.once("error", err => {
-      clearTimeout(timeout);
-      console.error("Não foi possível iniciar FFmpeg:", err.message);
-      if (!res.headersSent && !res.destroyed) sendJson(res, 503, { error: "FFmpeg não está instalado ou não pôde ser iniciado" });
-      else if (!res.destroyed) res.destroy(err);
-    });
-    ffmpeg.once("close", (code, signal) => {
-      clearTimeout(timeout);
-      if (res.destroyed) return;
-      if (code === 0 && gotOutput) {
-        if (!res.writableEnded) res.end();
-        console.log("VideoScale fallback concluído", { mode, extractor: "ffmpeg" });
-        return;
-      }
-      const message = `FFmpeg falhou (código ${code}, sinal ${signal || "nenhum"}): ${ffmpegError.slice(-800)}`;
-      console.error(message);
-      if (!res.headersSent) sendJson(res, 502, { error: message });
-      else if (!res.destroyed) res.destroy(new Error(message));
-    });
+      await pipeline(createReadStream(outputPath), res);
+      console.log("VideoScale fallback convertido para M4A/AAC", { bytes: info.size });
+    } finally {
+      if (activeChild && activeChild.exitCode === null) activeChild.kill("SIGTERM");
+      await rm(directory, { recursive: true, force: true }).catch(() => {});
+    }
     return;
   }
 
