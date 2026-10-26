@@ -702,11 +702,14 @@ async function streamYouTube(videoUrl, req, res, mode = "video", platform = "you
   catch (error) { console.warn("Metadados indisponíveis:", error.message); }
   const isAudio = mode === "audio";
   const isInstagram = platform === "instagram";
+  // O YouTube nem sempre oferece um formato combinado moderno; o formato 18
+  // costuma ser MP4 com áudio+vídeo em um único fluxo, adequado para streaming.
+  // Mantemos um fallback combinado para vídeos em que o formato 18 não existe.
   const outputFormat = isInstagram
     ? "best[ext=mp4]/best"
     : isAudio
-      ? "bestaudio[ext=m4a]"
-      : "best[ext=mp4][vcodec!=none][acodec!=none]";
+      ? "bestaudio[ext=m4a]/best[ext=m4a][acodec!=none]"
+      : "18/best[ext=mp4][vcodec!=none][acodec!=none]";
   const outputType = isAudio ? "audio/mp4" : "video/mp4";
   const outputName = isInstagram ? "instagram-video.mp4" : isAudio ? "audio.m4a" : "video.mp4";
   const args = [
