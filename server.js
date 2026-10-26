@@ -703,18 +703,19 @@ const server = http.createServer(async (req, res) => {
     try {
       const candidates = [];
       const seenQueries = new Set();
-      const addBatch = async searchQuery => {
+      const addBatch = async (searchQuery, limit) => {
         if (seenQueries.has(searchQuery)) return;
         seenQueries.add(searchQuery);
-        candidates.push(...await searchPinterest(searchQuery, 1, 60));
+        candidates.push(...await searchPinterest(searchQuery, 1, Math.max(1, Math.min(60, limit))));
       };
-      await addBatch(query);
+      await addBatch(query, max);
       let results = dedupePinterestResults(candidates).slice(0, max);
       const refillQueries = [`${query} fotografia`, `${query} paisagem`, `${query} fotos`];
       for (const refillQuery of refillQueries) {
         if (results.length >= max) break;
         try {
-          await addBatch(refillQuery);
+          const needed = Math.min(60, Math.max(5, max - results.length + 3));
+          await addBatch(refillQuery, needed);
           results = dedupePinterestResults(candidates).slice(0, max);
         } catch (refillError) {
           console.warn("Pinterest busca complementar falhou:", refillError.message);
