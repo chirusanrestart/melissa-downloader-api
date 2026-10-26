@@ -522,7 +522,60 @@ async function streamViaVideoScale(videoUrl, res, mode) {
   console.log("VideoScale fallback concluído", { mode });
 }
 
-function streamYouTube(videoUrl, req, res, mode = "video", platform = "youtube") {
+function getYtDlpMetadata(videoUrl, platform) {
+  return new Promise((resolve, reject) => {
+    const args = [
+      "--no-playlist", "--no-warnings", "--dump-single-json", "--skip-download",
+      "--js-runtimes", "node", "--remote-components", "ejs:github",
+      "--impersonate", "chrome", "--", videoUrl
+    ];
+    const child = spawn(YTDLP, args, { stdio: ["ignore", "pipe", "pipe"] });
+    let stdout = "";
+    let stderr = "";
+    let settled = false;
+    const timeout = setTimeout(() => {
+      child.kill("SIGTERM");
+      if (!settled) { settled = true; reject(new Error("Tempo limite lendo metadados")); }
+    }, 25_000);
+    timeout.unref();
+    const finish = (error, value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      error ? reject(error) : resolve(value);
+    };
+    child.stdout.on("data", chunk => {
+      stdout += chunk.toString("utf8");
+      if (Buffer.byteLength(stdout) > 1024 * 1024) {
+        child.kill("SIGTERM");
+        finish(new Error("Metadados excederam o limite"));
+      }
+    });
+    child.stderr.on("data", chunk => { stderr = (stderr + chunk.toString("utf8")).slice(-1500); });
+    child.once("error", err => finish(err));
+    child.once("close", code => {
+      if (code !== 0) return finish(new Error(stderr || "yt-dlp não retornou metadados"));
+      try {
+        const data = JSON.parse(stdout);
+        finish(null, {
+          title: String(data.title || "").slice(0, 500),
+          description: String(data.description || "").slice(0, 5000),
+          thumbnail: String(data.thumbnail || "").slice(0, 2000)
+        });
+      } catch { finish(new Error("Metadados JSON inválidos")); }
+    });
+  });
+}
+
+function metadataHeaders(metadata) {
+  const headers = {};
+  if (metadata?.title) headers["x-media-title-b64"] = Buffer.from(metadata.title, "utf8").toString("base64url");
+  if (metadata?.description) headers["x-media-description-b64"] = Buffer.from(metadata.description, "utf8").toString("base64url");
+  if (metadata?.thumbnail && /^https:\/\//i.test(metadata.thumbnail)) headers["x-media-thumbnail-url"] = metadata.thumbnail;
+  return headers;
+}
+
+async function streamYouTube(videoUrl, req, res, mode = "video", platform = "youtube") {\n  let metadata = null;\n  try { metadata = await getYtDlpMetadata(videoUrl, platform); }\n  catch (error) { console.warn("Metadados indisponíveis:", error.message); }
   const isAudio = mode === "audio";
   const isInstagram = platform === "instagram";
   const outputFormat = isInstagram
