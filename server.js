@@ -115,7 +115,7 @@ async function getYouTubePlaylist(url) {
 
 const PORT = Number(process.env.PORT || 8000);
 const API_KEY = process.env.API_KEY || "";
-const MAX_BODY = 256 * 1024;
+const MAX_BODY = 24 * 1024 * 1024;
 const MAX_VIDEO_BYTES = 500 * 1024 * 1024;
 const YTDLP = process.env.YTDLP_PATH || "yt-dlp";
 const PYTHON = process.env.PYTHON_PATH || "python";
@@ -393,6 +393,108 @@ async function processStickerPack(payload, res) {
     return sendJson(res, 200, { ok: true, total: payload.items.length, processed: results.filter(x => x.ok).length, results });
   } finally {
     await rm(workDir, { recursive: true, force: true }).catch(() => {});
+  }
+}
+
+
+async function processSingleMedia(payload, pathname, res) {
+  if (typeof payload.data !== "string" || !payload.data.trim()) {
+    return sendJson(res, 400, { error: "Informe a mídia em base64 no campo data." });
+  }
+  if (payload.data.length > 16 * 1024 * 1024) {
+    return sendJson(res, 413, { error: "A mídia excede o limite de 12 MiB." });
+  }
+  const input = Buffer.from(payload.data, "base64");
+  if (!input.length || input.length > 12 * 1024 * 1024) {
+    return sendJson(res, 413, { error: "Mídia vazia ou acima de 12 MiB." });
+  }
+
+  try {
+    let output;
+    let contentType;
+    let filename;
+    if (pathname === "/media/sticker") {
+      const animated = payload.animated === true;
+      if (animated) {
+        const directory = await mkdtemp(join(tmpdir(), "media-sticker-"));
+        try {
+          const inputPath = join(directory, "input-media");
+          const outputPath = join(directory, "sticker.webp");
+          await writeFile(inputPath, input);
+          await new Promise((resolve, reject) => {
+            const child = spawn("ffmpeg", [
+              "-hide_banner", "-loglevel", "error", "-y", "-i", inputPath,
+              "-t", "10", "-vf",
+              "fps=10,scale=512:512:force_original_aspect_ratio=increase,crop=512:512",
+              "-an", "-loop", "0", "-c:v", "libwebp_anim", "-quality", "65",
+              "-compression_level", "4", outputPath
+            ], { stdio: ["ignore", "ignore", "pipe"] });
+            let stderr = "";
+            const timeout = setTimeout(() => child.kill("SIGKILL"), 90_000);
+            child.stderr.on("data", chunk => { stderr = (stderr + chunk.toString()).slice(-2000); });
+            child.once("error", error => { clearTimeout(timeout); reject(error); });
+            child.once("close", code => {
+              clearTimeout(timeout);
+              code === 0 ? resolve() : reject(new Error(stderr || "FFmpeg falhou ao criar figurinha animada."));
+            });
+          });
+          output = await readFile(outputPath);
+        } finally {
+          await rm(directory, { recursive: true, force: true }).catch(() => {});
+        }
+      } else {
+        output = await sharp(input, { limitInputPixels: 40_000_000 })
+          .rotate()
+          .resize(512, 512, { fit: "cover", position: "centre" })
+          .webp({ quality: 80, effort: 3, smartSubsample: true })
+          .toBuffer();
+      }
+      if (!output.length || output.length > 1024 * 1024) {
+        return sendJson(res, 413, { error: "A figurinha ultrapassou 1 MiB." });
+      }
+      contentType = "image/webp";
+      filename = "sticker.webp";
+    } else if (pathname === "/media/toimg") {
+      output = await sharp(input, { limitInputPixels: 40_000_000 })
+        .rotate()
+        .png({ compressionLevel: 6, adaptiveFiltering: true })
+        .toBuffer();
+      contentType = "image/png";
+      filename = "image.png";
+    } else if (pathname === "/media/hd") {
+      const profiles = {
+        balanced: { contrast: 1.12, brightness: 0.01, saturation: 1.12, sharp: 0.45 },
+        anime: { contrast: 1.10, brightness: 0.005, saturation: 1.16, sharp: 0.35 },
+        sharp: { contrast: 1.04, brightness: 0, saturation: 1.02, sharp: 0.72 },
+        vivid: { contrast: 1.06, brightness: 0.005, saturation: 1.24, sharp: 0.25 },
+        natural: { contrast: 1.05, brightness: 0.005, saturation: 1.04, sharp: 0.22 },
+        beauty: { contrast: 1.06, brightness: 0.012, saturation: 1.08, sharp: 0.28 }
+      };
+      const profile = profiles[payload.profile] || profiles.balanced;
+      output = await sharp(input, { limitInputPixels: 40_000_000 })
+        .rotate()
+        .modulate({ saturation: profile.saturation, brightness: 1 + profile.brightness })
+        .linear(profile.contrast, profile.brightness * 255)
+        .sharpen(profile.sharp)
+        .jpeg({ quality: 92, mozjpeg: true })
+        .toBuffer();
+      contentType = "image/jpeg";
+      filename = "image-hd.jpg";
+    } else {
+      return sendJson(res, 404, { error: "Rota de mídia não encontrada." });
+    }
+
+    res.writeHead(200, {
+      "content-type": contentType,
+      "content-disposition": 'attachment; filename="' + filename + '"',
+      "cache-control": "no-store",
+      "x-content-type-options": "nosniff",
+      "content-length": String(output.length)
+    });
+    return res.end(output);
+  } catch (error) {
+    console.error("Falha no processamento de mídia:", pathname, error.message);
+    return sendJson(res, 502, { error: "Falha ao processar a mídia na nuvem.", details: String(error.message || "").slice(0, 300) });
   }
 }
 
@@ -1072,11 +1174,11 @@ const server = http.createServer(async (req, res) => {
       service: "melissa-downloader-api",
       runtime: "node",
       port: PORT,
-      endpoints: ["POST /download", "POST /youtube/search", "POST /youtube/playlist", "POST /pinterest/search", "POST /pinterest/image", "POST /media/process-pack"]
+      endpoints: ["POST /download", "POST /youtube/search", "POST /youtube/playlist", "POST /pinterest/search", "POST /pinterest/image", "POST /media/process-pack", "POST /media/sticker", "POST /media/toimg", "POST /media/hd"]
     });
   }
 
-  if (req.method !== "POST" || !["/download", "/pinterest/search", "/pinterest/image", "/youtube/search", "/youtube/playlist", "/media/process-pack"].includes(pathname)) {
+  if (req.method !== "POST" || !["/download", "/pinterest/search", "/pinterest/image", "/youtube/search", "/youtube/playlist", "/media/process-pack", "/media/sticker", "/media/toimg", "/media/hd"].includes(pathname)) {
     return sendJson(res, 404, { error: "Rota não encontrada" });
   }
 
@@ -1117,6 +1219,7 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (pathname === "/pinterest/image") return sendPinterestImage(payload, res);
+  if (pathname === "/media/sticker" || pathname === "/media/toimg" || pathname === "/media/hd") return processSingleMedia(payload, pathname, res);
   if (pathname === "/media/process-pack") return processStickerPack(payload, res);
 
   if (pathname === "/pinterest/search") {
