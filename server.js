@@ -1,5 +1,6 @@
 import http from "node:http";
 import { spawn } from "node:child_process";
+import archiver from "archiver";
 import { Readable, Transform } from "node:stream";
 import { createReadStream } from "node:fs";
 import { pipeline } from "node:stream/promises";
@@ -87,6 +88,65 @@ async function searchYouTubeByName(query) {
     thumbnail: String(video.thumbnail || "").slice(0, 2000),
     duration: Number(video.duration || 0) || null
   };
+}
+
+async function downloadYouTubePlaylist(payload, res) {
+  if (typeof payload.url !== "string" || !isYouTubeUrl(payload.url)) return sendJson(res, 400, { error: "Informe uma URL válida do YouTube no campo url" });
+  let parsed;
+  try { parsed = new URL(payload.url); } catch {}
+  if (!parsed?.searchParams.has("list")) return sendJson(res, 400, { error: "O link precisa conter list= com o ID da playlist" });
+
+  const directory = await mkdtemp(join(tmpdir(), "youtube-playlist-"));
+  let child;
+  let stderr = "";
+  try {
+    await new Promise((resolve, reject) => {
+      let settled = false;
+      const finish = error => { if (settled) return; settled = true; clearTimeout(timeout); error ? reject(error) : resolve(); };
+      child = spawn(YTDLP, [
+        "--yes-playlist", "--playlist-end", "100", "--no-warnings", "--no-progress",
+        "--js-runtimes", "node", "--remote-components", "ejs:github",
+        "--max-filesize", "500M", "-f", "bestaudio/best",
+        "--extract-audio", "--audio-format", "m4a", "--audio-quality", "5",
+        "-o", join(directory, "%(playlist_index)03d - %(title).120B.%(ext)s"), "--", payload.url
+      ], { stdio: ["ignore", "ignore", "pipe"] });
+      const timeout = setTimeout(() => {
+        child.kill("SIGTERM");
+        setTimeout(() => { if (child.exitCode === null) child.kill("SIGKILL"); }, 2000).unref();
+        finish(new Error("Tempo limite baixando a playlist (15 minutos)"));
+      }, 900000);
+      timeout.unref();
+      child.stderr.setEncoding("utf8");
+      child.stderr.on("data", chunk => { stderr = (stderr + chunk).slice(-4000); });
+      child.once("error", finish);
+      child.once("close", code => code === 0 ? finish() : finish(new Error(stderr.trim() || "yt-dlp falhou ao baixar a playlist")));
+      res.once("close", () => { if (!res.writableEnded && child?.exitCode === null) child.kill("SIGTERM"); });
+    });
+
+    const files = (await readdir(directory)).filter(name => /\.m4a$/i.test(name)).sort((a, b) => a.localeCompare(b, "en", { numeric: true }));
+    if (!files.length) throw new Error("A playlist não gerou arquivos M4A");
+    const archive = archiver("zip", { zlib: { level: 1 } });
+    res.writeHead(200, {
+      "content-type": "application/zip",
+      "content-disposition": 'attachment; filename="youtube-playlist.zip"',
+      "cache-control": "no-store",
+      "x-content-type-options": "nosniff",
+      "x-playlist-count": String(files.length)
+    });
+    archive.on("warning", error => { if (error.code !== "ENOENT") archive.destroy(error); });
+    archive.on("error", error => { console.error("Falha ao compactar playlist:", error.message); if (!res.destroyed) res.destroy(error); });
+    archive.pipe(res);
+    for (const name of files) archive.file(join(directory, name), { name });
+    await archive.finalize();
+    console.log("Playlist YouTube pronta", { tracks: files.length });
+  } catch (error) {
+    console.error("Falha ao baixar playlist:", error.message);
+    if (!res.headersSent && !res.destroyed) sendJson(res, 502, { error: "Falha ao baixar a playlist inteira no servidor", details: String(error.message || "").slice(0, 700) });
+    else if (!res.destroyed) res.destroy(error);
+  } finally {
+    if (child && child.exitCode === null) child.kill("SIGTERM");
+    await rm(directory, { recursive: true, force: true }).catch(() => {});
+  }
 }
 
 async function getYouTubePlaylist(url) {
@@ -1267,11 +1327,11 @@ const server = http.createServer(async (req, res) => {
       service: "melissa-downloader-api",
       runtime: "node",
       port: PORT,
-      endpoints: ["POST /download", "POST /youtube/search", "POST /youtube/playlist", "POST /pinterest/search", "POST /pinterest/image", "POST /media/process-pack", "POST /media/sticker", "POST /media/toimg", "POST /media/hd"]
+      endpoints: ["POST /download", "POST /youtube/search", "POST /youtube/playlist", "POST /youtube/playlist/download", "POST /pinterest/search", "POST /pinterest/image", "POST /media/process-pack", "POST /media/sticker", "POST /media/toimg", "POST /media/hd"]
     });
   }
 
-  if (req.method !== "POST" || !["/download", "/pinterest/search", "/pinterest/image", "/youtube/search", "/youtube/playlist", "/media/process-pack", "/media/sticker", "/media/toimg", "/media/hd"].includes(pathname)) {
+  if (req.method !== "POST" || !["/download", "/pinterest/search", "/pinterest/image", "/youtube/search", "/youtube/playlist", "/youtube/playlist/download", "/media/process-pack", "/media/sticker", "/media/toimg", "/media/hd"].includes(pathname)) {
     return sendJson(res, 404, { error: "Rota não encontrada" });
   }
 
@@ -1298,6 +1358,8 @@ const server = http.createServer(async (req, res) => {
       return sendJson(res, 502, { error: "Falha na pesquisa do YouTube", details: String(err.message || "").slice(0, 500) });
     }
   }
+
+  if (pathname === "/youtube/playlist/download") return downloadYouTubePlaylist(payload, res);
 
   if (pathname === "/youtube/playlist") {
     if (typeof payload.url !== "string" || !isYouTubeUrl(payload.url)) {
