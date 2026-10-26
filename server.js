@@ -628,7 +628,8 @@ async function streamYouTube(videoUrl, req, res, mode = "video", platform = "you
       "content-type": outputType,
       "content-disposition": `attachment; filename="${outputName}"`,
       "cache-control": "no-store",
-      "x-content-type-options": "nosniff"
+      "x-content-type-options": "nosniff",
+      ...metadataHeaders(metadata)
     });
 
     if (!res.write(firstChunk)) {
