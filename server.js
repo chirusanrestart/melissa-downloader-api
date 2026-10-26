@@ -253,7 +253,7 @@ async function sendPinterestImage(payload, res) {
     }
     if (!bytes) return sendJson(res, 502, { error: "O Pinterest retornou uma imagem vazia" });
     const input = Buffer.concat(chunks);
-    if (contentType === "image/gif" || /\\.gif(?:[?#]|$)/i.test(imageUrl.pathname)) {
+    if (contentType === "image/gif" || /\.gif(?:[?#]|$)/i.test(imageUrl.pathname)) {
       res.writeHead(200, {
         "content-type": "image/gif",
         "content-disposition": 'inline; filename="pinterest-image.gif"',
