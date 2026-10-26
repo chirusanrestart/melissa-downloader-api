@@ -37,7 +37,23 @@ Instagram Reel público:
 
 As rotas `/youtube/search` e `/youtube/playlist` retornam JSON; a playlist é limitada a 100 itens por chamada. A resposta bem-sucedida de `/download` é a mídia binária. O servidor transmite pelo fluxo HTTP nativo, sem dividir manualmente a resposta em blocos de 64 KB. O limite do vídeo é 500 MiB para TikTok; o YouTube é transmitido em fluxo, sem arquivo temporário, e depende da disponibilidade de um formato MP4 que já contenha áudio e vídeo juntos.
 
-### Pinterest: pesquisar pins
+### Conversão de mídia na nuvem
+
+Os comandos do Chiru San Bot podem usar estas rotas autenticadas para enviar a mídia em base64 e receber o arquivo convertido como resposta binária:
+
+- `POST /media/sticker`: imagem para figurinha WebP 512×512; com `animated: true`, usa FFmpeg para criar figurinha animada de até 10 segundos.
+- `POST /media/toimg`: WebP de entrada para PNG.
+- `POST /media/hd`: realça uma imagem JPEG com o perfil solicitado: `balanced`, `anime`, `sharp`, `vivid`, `natural` ou `beauty`.
+
+Exemplo de corpo JSON para `/media/hd`:
+
+```json
+{"data":"BASE64_DA_IMAGEM","profile":"vivid"}
+```
+
+Para `/media/sticker`, use `{"data":"BASE64_DA_MIDIA","animated":false}`. Para `/media/toimg`, basta enviar `{"data":"BASE64_DA_FIGURINHA_WEBP"}`. O limite de entrada é 12 MiB por mídia. Todas as rotas POST exigem `X-API-Key`. O bot pode recorrer ao processamento local se a API estiver indisponível.
+
+## Pinterest: pesquisar pins
 
 ```http
 POST /pinterest/search
