@@ -17,7 +17,7 @@ scaling:
   max_memory: 1024
   min_replicas: 1
   max_replicas: 1
-  max_http_requests_per_replica: 30
+  max_http_requests_per_replica: 60
 health_check:
   type: http
   interval_in_seconds: 30
