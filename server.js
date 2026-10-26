@@ -264,15 +264,19 @@ async function sendPinterestImage(payload, res) {
       return res.end(input);
     }
 
-    const output = await sharp(input, { limitInputPixels: 40_000_000 })
+    const image = sharp(input, { limitInputPixels: 40_000_000 })
       .rotate()
       .resize(512, 512, {
         fit: "contain",
         background: { r: 0, g: 0, b: 0, alpha: 0 },
         withoutEnlargement: false
-      })
+      });
+    let output = await image.clone()
       .webp({ quality: 80, effort: 3, smartSubsample: true })
       .toBuffer();
+    if (output.length > 900 * 1024) {
+      output = await image.webp({ quality: 55, effort: 4, smartSubsample: true }).toBuffer();
+    }
 
     res.writeHead(200, {
       "content-type": "image/webp",
