@@ -270,11 +270,14 @@ async function streamTikTok(payload, req, res) {
       return sendJson(res, 413, { error: "Vídeo excede o limite de 500 MiB" });
     }
 
+    const tiktokTitle = String(result?.data?.title || "").slice(0, 500);
+    const tiktokCover = String(result?.data?.origin_cover || result?.data?.cover || result?.data?.dynamic_cover || "");
     res.writeHead(200, {
       "content-type": videoResponse.headers.get("content-type") || "video/mp4",
       "content-disposition": 'attachment; filename="tiktok-video.mp4"',
       "cache-control": "no-store",
       "x-content-type-options": "nosniff",
+      ...metadataHeaders({ title: tiktokTitle, description: tiktokTitle, thumbnail: tiktokCover }),
       ...(declaredLength ? { "content-length": String(declaredLength) } : {})
     });
 
