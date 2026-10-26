@@ -1084,10 +1084,30 @@ async function streamYouTubeAudioM4a(videoUrl, res, metadata = null) {
     console.log("Áudio do YouTube convertido para M4A/AAC", { bytes: info.size });
   } catch (error) {
     console.error("Falha ao preparar áudio M4A:", error.message);
-    if (!res.headersSent && !res.destroyed) {
+    // O caminho M4A prepara o arquivo antes de responder, então pode trocar
+    // para o fallback remoto com segurança enquanto nenhum header foi enviado.
+    if (!res.headersSent && !res.destroyed && VIDEOSCALE_USERNAME && VIDEOSCALE_PASSWORD) {
+      try {
+        console.warn("Tentando fallback VideoScale para áudio após falha local:", error.message);
+        await streamViaVideoScale(videoUrl, res, "audio");
+        return;
+      } catch (fallbackError) {
+        console.error("VideoScale fallback de áudio falhou:", fallbackError.message);
+        if (!res.headersSent && !res.destroyed) {
+          sendJson(res, 502, {
+            error: "Falha no áudio do YouTube via yt-dlp/FFmpeg e VideoScale",
+            yt_dlp: String(error.message || "Erro desconhecido").slice(0, 700),
+            videoscale: String(fallbackError.message || "Erro desconhecido").slice(0, 700)
+          });
+        } else if (!res.destroyed) {
+          res.destroy(fallbackError);
+        }
+      }
+    } else if (!res.headersSent && !res.destroyed) {
       sendJson(res, 502, {
         error: "Falha ao converter o áudio do YouTube para M4A/AAC",
-        details: String(error.message || "Erro desconhecido").slice(0, 900)
+        details: String(error.message || "Erro desconhecido").slice(0, 900),
+        ...(!VIDEOSCALE_USERNAME || !VIDEOSCALE_PASSWORD ? { fallback: "VideoScale não está configurado no ambiente do servidor" } : {})
       });
     } else if (!res.destroyed) {
       res.destroy(error);
@@ -1171,13 +1191,37 @@ async function streamYouTube(videoUrl, req, res, mode = "video", platform = "you
     }
   });
 
-  child.on("error", err => {
+  child.on("error", async err => {
     if (settled) return;
     settled = true;
     clearTimeout(timeout);
     console.error("Não foi possível iniciar yt-dlp:", err.message);
-    if (!res.headersSent) {
-      sendJson(res, 503, { error: "yt-dlp não está instalado ou não pôde ser iniciado" });
+    // Se o binário local não iniciar, ainda tentamos o extrator remoto.
+    if (platform === "youtube" && !res.headersSent && !res.destroyed &&
+        VIDEOSCALE_USERNAME && VIDEOSCALE_PASSWORD) {
+      try {
+        console.warn("Tentando fallback VideoScale porque yt-dlp não iniciou");
+        await streamViaVideoScale(videoUrl, res, mode);
+        return;
+      } catch (fallbackError) {
+        console.error("VideoScale fallback após erro de inicialização falhou:", fallbackError.message);
+        if (!res.headersSent && !res.destroyed) {
+          sendJson(res, 502, {
+            error: "yt-dlp não iniciou e o fallback VideoScale falhou",
+            yt_dlp: String(err.message || "Erro ao iniciar yt-dlp").slice(0, 700),
+            videoscale: String(fallbackError.message || "Erro desconhecido").slice(0, 700)
+          });
+        } else if (!res.destroyed) {
+          res.destroy(fallbackError);
+        }
+      }
+      return;
+    }
+    if (!res.headersSent && !res.destroyed) {
+      sendJson(res, 503, {
+        error: "yt-dlp não está instalado ou não pôde ser iniciado",
+        ...(!VIDEOSCALE_USERNAME || !VIDEOSCALE_PASSWORD ? { fallback: "VideoScale não está configurado no ambiente do servidor" } : {})
+      });
     } else if (!res.destroyed) {
       res.destroy(err);
     }
