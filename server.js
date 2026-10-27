@@ -8,6 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import yts from "yt-search";
 import sharp from "sharp";
+import webp from "node-webpmux";
 
 function runYtDlpJson(args, { timeoutMs = 60_000, maxOutputBytes = 2 * 1024 * 1024 } = {}) {
   return new Promise((resolve, reject) => {
@@ -299,10 +300,39 @@ async function sendPinterestImage(payload, res) {
 }
 
 
+function createStickerExif(packname, publisher) {
+  const json = Buffer.from(JSON.stringify({
+    "sticker-pack-id": "melissa-downloader-api",
+    "sticker-pack-name": packname,
+    "sticker-pack-publisher": publisher,
+    emojis: ["🌸"]
+  }), "utf-8");
+  const exifAttr = Buffer.from([
+    0x49, 0x49, 0x2a, 0x00,
+    0x08, 0x00, 0x00, 0x00,
+    0x01, 0x00, 0x41, 0x57,
+    0x07, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x16, 0x00,
+    0x00, 0x00
+  ]);
+  const exif = Buffer.concat([exifAttr, json]);
+  exif.writeUIntLE(json.length, 14, 4);
+  return exif;
+}
+
+async function addStickerMetadata(file, packname, publisher) {
+  const image = new webp.Image();
+  await image.load(file);
+  image.exif = createStickerExif(packname, publisher);
+  await image.save(file);
+}
+
 async function processStickerPack(payload, res) {
   if (!Array.isArray(payload.items) || payload.items.length < 1 || payload.items.length > 60) {
     return sendJson(res, 400, { error: "Informe items com 1 a 60 mídias." });
   }
+  const packname = String(payload.packname || "Figurinhas").trim().slice(0, 128) || "Figurinhas";
+  const publisher = String(payload.publisher || "Melissa").trim().slice(0, 128) || "Melissa";
   const workDir = await mkdtemp(join(tmpdir(), "melissa-stickers-"));
   const results = [];
   let totalOutput = 0;
@@ -380,6 +410,7 @@ async function processStickerPack(payload, res) {
           if (output.length > 900 * 1024) output = await image.webp({ quality: 55, effort: 4, smartSubsample: true }).toBuffer();
           await writeFile(outputPath, output);
         }
+        await addStickerMetadata(outputPath, packname, publisher);
         const output = await readFile(outputPath);
         if (!output.length || output.length > 900 * 1024) throw new Error("Figurinha processada excede 900 KiB");
         totalOutput += output.length;
