@@ -429,6 +429,18 @@ async function processStickerPack(payload, res) {
 }
 
 
+async function addStickerMetadataBuffer(buffer, packname, publisher) {
+  const directory = await mkdtemp(join(tmpdir(), "sticker-metadata-"));
+  const file = join(directory, "sticker.webp");
+  try {
+    await writeFile(file, buffer);
+    await addStickerMetadata(file, packname, publisher);
+    return await readFile(file);
+  } finally {
+    await rm(directory, { recursive: true, force: true }).catch(() => {});
+  }
+}
+
 async function processSingleMedia(payload, pathname, res) {
   if (typeof payload.data !== "string" || !payload.data.trim()) {
     return sendJson(res, 400, { error: "Informe a mídia em base64 no campo data." });
@@ -481,6 +493,9 @@ async function processSingleMedia(payload, pathname, res) {
           .webp({ quality: 80, effort: 3, smartSubsample: true })
           .toBuffer();
       }
+      const packname = String(payload.packname || "Figurinhas").trim().slice(0, 128) || "Figurinhas";
+      const publisher = String(payload.publisher || "Melissa").trim().slice(0, 128) || "Melissa";
+      output = await addStickerMetadataBuffer(output, packname, publisher);
       if (!output.length || output.length > 1024 * 1024) {
         return sendJson(res, 413, { error: "A figurinha ultrapassou 1 MiB." });
       }
