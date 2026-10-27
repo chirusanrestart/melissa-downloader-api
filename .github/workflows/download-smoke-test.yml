@@ -1,0 +1,102 @@
+name: Download API smoke tests
+
+on:
+  workflow_dispatch:
+    inputs:
+      video_url:
+        description: "URL de um vídeo público do YouTube, para testar vídeo e áudio"
+        required: true
+        type: string
+      playlist_url:
+        description: "URL opcional de playlist pública do YouTube"
+        required: false
+        type: string
+      test_playlist_track:
+        description: "Testar também a rota de faixa individual da playlist"
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+jobs:
+  smoke-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check API health
+        env:
+          API_BASE_URL: https://melissa-api-server.hostless.app
+        run: |
+          node --input-type=module <<'NODE'
+          const r = await fetch(process.env.API_BASE_URL + "/health", { signal: AbortSignal.timeout(15000) });
+          const text = await r.text();
+          if (!r.ok) throw new Error(`Health returned HTTP ${r.status}: ${text.slice(0, 500)}`);
+          const data = JSON.parse(text);
+          if (data.ok !== true) throw new Error("Health JSON did not contain ok:true");
+          console.log(JSON.stringify(data, null, 2));
+          NODE
+
+      - name: Test authenticated download routes
+        env:
+          API_BASE_URL: https://melissa-api-server.hostless.app
+          API_KEY: ${{ secrets.API_KEY }}
+          VIDEO_URL: ${{ inputs.video_url }}
+          PLAYLIST_URL: ${{ inputs.playlist_url }}
+          TEST_PLAYLIST_TRACK: ${{ inputs.test_playlist_track }}
+        run: |
+          node --input-type=module <<'NODE'
+          import { writeFile, unlink } from "node:fs/promises";
+          import { randomUUID } from "node:crypto";
+
+          const base = process.env.API_BASE_URL;
+          const key = process.env.API_KEY;
+          const videoUrl = process.env.VIDEO_URL;
+          const playlistUrl = process.env.PLAYLIST_URL;
+          const trackTest = process.env.TEST_PLAYLIST_TRACK === "true";
+          if (!key) throw new Error("Configure o secret API_KEY no repositório.");
+          if (!videoUrl) throw new Error("Informe video_url no workflow_dispatch.");
+
+          async function post(path, payload, timeoutMs = 180000) {
+            const response = await fetch(base + path, {
+              method: "POST",
+              headers: { "content-type": "application/json", "x-api-key": key },
+              body: JSON.stringify(payload),
+              signal: AbortSignal.timeout(timeoutMs)
+            });
+            if (!response.ok) throw new Error(`${path}: HTTP ${response.status}: ${(await response.text()).slice(0, 1200)}`);
+            return response;
+          }
+
+          async function testMedia(path, payload, expectedType, label) {
+            const response = await post(path, payload, 240000);
+            const type = (response.headers.get("content-type") || "").toLowerCase();
+            if (!type.includes(expectedType)) throw new Error(`${label}: esperado ${expectedType}, recebido ${type}`);
+            const bytes = Buffer.from(await response.arrayBuffer());
+            if (bytes.length < 1024) throw new Error(`${label}: resposta pequena demais (${bytes.length} bytes)`);
+            if (expectedType === "audio/mp4" && !bytes.includes(Buffer.from("ftyp"))) {
+              throw new Error(`${label}: não encontrei a assinatura MP4 ftyp no M4A`);
+            }
+            const file = `/tmp/${randomUUID()}-${label.replace(/[^a-z0-9]/gi, "_")}`;
+            await writeFile(file, bytes);
+            console.log(`PASS ${label}: HTTP 200, ${type}, ${bytes.length} bytes`);
+            await unlink(file);
+          }
+
+          await testMedia("/download", { url: videoUrl, mode: "video" }, "video/mp4", "download-video");
+          await testMedia("/download", { url: videoUrl, mode: "audio" }, "audio/mp4", "download-audio-m4a");
+
+          if (playlistUrl) {
+            const response = await post("/youtube/playlist", { url: playlistUrl }, 120000);
+            const data = await response.json();
+            if (!Array.isArray(data.tracks) || data.tracks.length === 0) throw new Error("/youtube/playlist não retornou faixas");
+            console.log(`PASS youtube/playlist: ${data.tracks.length} faixas`);
+          } else console.log("SKIP youtube/playlist: playlist_url não informado");
+
+          if (trackTest) {
+            if (new URL(videoUrl).searchParams.has("list")) throw new Error("video_url para teste de faixa deve ser individual, sem list=");
+            await testMedia("/youtube/playlist/download", { url: videoUrl, mode: "video" }, "video/mp4", "playlist-track-video");
+            await testMedia("/youtube/playlist/download", { url: videoUrl, mode: "audio" }, "audio/mp4", "playlist-track-audio-m4a");
+          } else console.log("SKIP youtube/playlist/download: opção desativada");
+          NODE
