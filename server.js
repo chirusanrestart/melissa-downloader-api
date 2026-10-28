@@ -610,6 +610,21 @@ async function readJson(req, maxBody = MAX_BODY) {
   }
 }
 
+const TIKWM_REQUEST_INTERVAL_MS = 2_000;
+let nextTikwmRequestAt = 0;
+
+// Limita globalmente o início das chamadas ao TikWM neste processo,
+// inclusive quando vários downloads chegam ao mesmo tempo.
+async function waitForTikwmRequestSlot() {
+  const now = Date.now();
+  const scheduledAt = Math.max(now, nextTikwmRequestAt);
+  nextTikwmRequestAt = scheduledAt + TIKWM_REQUEST_INTERVAL_MS;
+  const delay = scheduledAt - now;
+  if (delay > 0) {
+    await new Promise(resolve => setTimeout(resolve, delay));
+  }
+}
+
 async function streamTikTok(payload, req, res) {
   const abortController = new AbortController();
   res.on("close", () => {
@@ -618,6 +633,8 @@ async function streamTikTok(payload, req, res) {
 
   try {
     const form = new URLSearchParams({ url: payload.url, hd: "1" });
+    await waitForTikwmRequestSlot();
+    if (abortController.signal.aborted) return;
     const apiResponse = await fetch("https://www.tikwm.com/api/", {
       method: "POST",
       headers: {
