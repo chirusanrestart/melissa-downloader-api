@@ -698,88 +698,146 @@ async function streamTikTokWithYtDlp(videoUrl, req, res, signal) {
     return sendJson(res, 400, { error: "URL HTTPS do TikTok inválida" });
   }
 
-  const child = spawn(YTDLP, [
-    "--no-playlist", "--no-warnings", "--no-progress",
-    "--js-runtimes", "node", "--remote-components", "ejs:github",
-    "--max-filesize", "500M",
-    "-f", "best[ext=mp4]/best",
-    "-o", "-",
-    "--", videoUrl
-  ], { stdio: ["ignore", "pipe", "pipe"] });
+  const attempts = [
+    { label: "padrão", args: [] },
+    { label: "Chrome via curl_cffi", args: ["--impersonate", "chrome"] }
+  ];
+  let lastError;
 
-  let stderr = "";
-  let settled = false;
-  let timer;
-  const cleanup = () => {
-    clearTimeout(timer);
-    signal?.removeEventListener("abort", abortChild);
-  };
-  const abortChild = () => {
-    if (child.exitCode === null) child.kill("SIGTERM");
-    setTimeout(() => { if (child.exitCode === null) child.kill("SIGKILL"); }, 1500).unref();
-  };
-  signal?.addEventListener("abort", abortChild, { once: true });
-  res.once("close", () => { if (!res.writableEnded) abortChild(); });
-  timer = setTimeout(() => abortChild(), YTDLP_TIMEOUT_MS);
-  timer.unref();
+  for (const attempt of attempts) {
+    if (signal?.aborted || res.destroyed) return;
+    let child;
+    let timer;
+    let stderr = "";
+    let abortChild;
+    let onResponseClose;
+    let closeResolve;
+    const closePromise = new Promise(resolve => { closeResolve = resolve; });
 
-  child.stderr.setEncoding("utf8");
-  child.stderr.on("data", chunk => { stderr = (stderr + chunk).slice(-3000); });
+    try {
+      const args = [
+        "--no-playlist", "--no-warnings", "--no-progress",
+        "--js-runtimes", "node", "--remote-components", "ejs:github",
+        ...attempt.args,
+        "--max-filesize", "500M",
+        "-f", "best[ext=mp4]/best",
+        "-o", "-",
+        "--", videoUrl
+      ];
+      child = spawn(YTDLP, args, { stdio: ["ignore", "pipe", "pipe"] });
+      child.stderr.setEncoding("utf8");
+      child.stderr.on("data", chunk => { stderr = (stderr + chunk).slice(-3000); });
+      child.once("close", (code, childSignal) => closeResolve({ code, signal: childSignal }));
 
-  try {
-    const firstChunk = await new Promise((resolve, reject) => {
-      child.stdout.once("data", chunk => {
-        child.stdout.pause();
-        resolve(chunk);
-      });
-      child.once("error", reject);
-      child.once("close", code => {
-        if (code !== 0) reject(new Error(stderr.trim() || "yt-dlp terminou com código " + code));
-      });
-      if (signal?.aborted) reject(new Error("Pedido cancelado pelo cliente"));
-    });
+      const killChild = () => {
+        if (child && child.exitCode === null) child.kill("SIGTERM");
+        setTimeout(() => {
+          if (child && child.exitCode === null) child.kill("SIGKILL");
+        }, 1500).unref();
+      };
+      abortChild = killChild;
+      signal?.addEventListener("abort", abortChild, { once: true });
+      onResponseClose = () => { if (!res.writableEnded) killChild(); };
+      res.once("close", onResponseClose);
+      timer = setTimeout(killChild, YTDLP_TIMEOUT_MS);
+      timer.unref();
 
-    if (res.destroyed) {
-      abortChild();
-      return;
-    }
-
-    res.writeHead(200, {
-      "content-type": "video/mp4",
-      "content-disposition": 'attachment; filename="tiktok-video.mp4"',
-      "cache-control": "no-store",
-      "x-content-type-options": "nosniff"
-    });
-
-    let bytes = firstChunk.length;
-    if (bytes > MAX_VIDEO_BYTES) throw new Error("Vídeo excedeu o limite de 500 MiB");
-    const sizeGuard = new Transform({
-      transform(chunk, encoding, callback) {
-        bytes += chunk.length;
-        if (bytes > MAX_VIDEO_BYTES) return callback(new Error("Vídeo excedeu o limite de 500 MiB"));
-        callback(null, chunk);
+      let firstChunk;
+      try {
+        firstChunk = await new Promise((resolve, reject) => {
+          let done = false;
+          const finish = (error, value) => {
+            if (done) return;
+            done = true;
+            child.stdout.removeListener("data", onData);
+            child.removeListener("error", onError);
+            child.removeListener("close", onCloseBeforeData);
+            error ? reject(error) : resolve(value);
+          };
+          const onData = chunk => {
+            child.stdout.pause();
+            finish(null, chunk);
+          };
+          const onError = error => finish(error);
+          const onCloseBeforeData = code => {
+            if (code !== 0) finish(new Error(stderr.trim() || "yt-dlp encerrou sem vídeo (código " + code + ")"));
+            else finish(new Error("yt-dlp terminou sem produzir vídeo"));
+          };
+          child.stdout.once("data", onData);
+          child.once("error", onError);
+          child.once("close", onCloseBeforeData);
+          if (signal?.aborted) finish(new Error("Pedido cancelado pelo cliente"));
+        });
+      } catch (error) {
+        if (signal?.aborted || res.destroyed) return;
+        lastError = error;
+        console.warn("TikTok yt-dlp (" + attempt.label + ") falhou antes do envio:", error.message);
+        killChild();
+        if (attempt === attempts[attempts.length - 1]) break;
+        continue;
       }
-    });
 
-    child.stdout.unshift(firstChunk);
-    child.stdout.resume();
-    await pipeline(child.stdout, sizeGuard, res);
-    settled = true;
-  } catch (err) {
-    if (!res.destroyed && !res.headersSent) {
-      sendJson(res, 502, {
-        error: "TikWM e yt-dlp do servidor falharam",
-        details: String(err.message || stderr || "Erro desconhecido").slice(0, 900)
+      if (signal?.aborted || res.destroyed) {
+        killChild();
+        return;
+      }
+
+      res.writeHead(200, {
+        "content-type": "video/mp4",
+        "content-disposition": 'attachment; filename="tiktok-video.mp4"',
+        "cache-control": "no-store",
+        "x-content-type-options": "nosniff"
       });
-    } else if (!res.destroyed) {
-      res.destroy(err);
+
+      let bytes = firstChunk.length;
+      const sizeGuard = new Transform({
+        transform(chunk, encoding, callback) {
+          bytes += chunk.length;
+          if (bytes > MAX_VIDEO_BYTES) return callback(new Error("Vídeo excedeu o limite de 500 MiB"));
+          callback(null, chunk);
+        },
+        flush(callback) {
+          closePromise.then(({ code, signal: childSignal }) => {
+            if (code !== 0) {
+              callback(new Error(stderr.trim() || "yt-dlp encerrou com código " + code + (childSignal ? " (" + childSignal + ")" : "")));
+            } else {
+              callback();
+            }
+          }, callback);
+        }
+      });
+      if (bytes > MAX_VIDEO_BYTES) throw new Error("Vídeo excedeu o limite de 500 MiB");
+
+      // Recoloca o primeiro bloco para que o pipeline envie todos os bytes.
+      child.stdout.unshift(firstChunk);
+      child.stdout.resume();
+      await pipeline(child.stdout, sizeGuard, res);
+      return;
+    } catch (error) {
+      lastError = error;
+      if (res.destroyed) return;
+      if (res.headersSent) {
+        console.error("Falha no meio do streaming TikTok:", error.message);
+        if (!res.destroyed) res.destroy(error);
+        return;
+      }
+      console.warn("TikTok yt-dlp (" + attempt.label + ") falhou:", error.message);
+      if (attempt === attempts[attempts.length - 1]) break;
+    } finally {
+      clearTimeout(timer);
+      if (abortChild) signal?.removeEventListener("abort", abortChild);
+      if (onResponseClose) res.removeListener("close", onResponseClose);
+      if (child && child.exitCode === null) child.kill("SIGTERM");
     }
-  } finally {
-    cleanup();
-    if (child.exitCode === null) child.kill("SIGTERM");
+  }
+
+  if (!res.destroyed && !res.headersSent) {
+    return sendJson(res, 502, {
+      error: "TikWM e yt-dlp do servidor falharam",
+      details: String(lastError?.message || "Erro desconhecido").slice(0, 900)
+    });
   }
 }
-
 
 const VIDEOSCALE_BASE_URL = "https://gate.apiscrape.net:16262";
 const VIDEOSCALE_USERNAME = process.env.VIDEOSCALE_USERNAME || "";
