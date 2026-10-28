@@ -789,7 +789,7 @@ async function streamTikTokWithYtDlp(videoUrl, req, res, signal) {
         "x-content-type-options": "nosniff"
       });
 
-      let bytes = firstChunk.length;
+      let bytes = 0;
       const sizeGuard = new Transform({
         transform(chunk, encoding, callback) {
           bytes += chunk.length;
@@ -806,7 +806,6 @@ async function streamTikTokWithYtDlp(videoUrl, req, res, signal) {
           }, callback);
         }
       });
-      if (bytes > MAX_VIDEO_BYTES) throw new Error("Vídeo excedeu o limite de 500 MiB");
 
       // Recoloca o primeiro bloco para que o pipeline envie todos os bytes.
       child.stdout.unshift(firstChunk);
