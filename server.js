@@ -622,42 +622,35 @@ async function streamTikTok(payload, req, res) {
       method: "POST",
       headers: {
         "content-type": "application/x-www-form-urlencoded; charset=UTF-8",
-        "user-agent": "Mozilla/5.0 MelissaDownloaderAPI/3.0"
+        "user-agent": "Mozilla/5.0 MelissaDownloaderAPI/3.1"
       },
       body: form,
-      signal: abortController.signal
+      signal: AbortSignal.any([abortController.signal, AbortSignal.timeout(20_000)])
     });
 
-    if (!apiResponse.ok) {
-      return sendJson(res, 502, { error: "TikWM respondeu com HTTP " + apiResponse.status });
-    }
+    if (!apiResponse.ok) throw new Error("TikWM respondeu com HTTP " + apiResponse.status);
 
     const result = await apiResponse.json();
     const directUrl = result?.data?.hdplay || result?.data?.play;
     if (result?.code !== 0 || typeof directUrl !== "string") {
-      return sendJson(res, 502, {
-        error: "TikWM não conseguiu resolver esse vídeo",
-        code: result?.code ?? null
-      });
+      throw new Error("TikWM não conseguiu resolver esse vídeo");
     }
 
     const videoUrl = new URL(directUrl);
-    if (videoUrl.protocol !== "https:") {
-      return sendJson(res, 502, { error: "TikWM retornou um endereço de mídia não seguro" });
-    }
+    if (videoUrl.protocol !== "https:") throw new Error("TikWM retornou um endereço de mídia não seguro");
 
     const videoResponse = await fetch(videoUrl, {
-      headers: { "user-agent": "Mozilla/5.0 MelissaDownloaderAPI/3.0" },
-      signal: abortController.signal
+      headers: { "user-agent": "Mozilla/5.0 MelissaDownloaderAPI/3.1" },
+      signal: AbortSignal.any([abortController.signal, AbortSignal.timeout(90_000)])
     });
 
     if (!videoResponse.ok || !videoResponse.body) {
-      return sendJson(res, 502, { error: "Não foi possível abrir o vídeo retornado pelo TikWM" });
+      throw new Error("Não foi possível abrir o vídeo retornado pelo TikWM");
     }
 
     const declaredLength = Number(videoResponse.headers.get("content-length") || 0);
     if (declaredLength > MAX_VIDEO_BYTES) {
-      abortController.abort();
+      await videoResponse.body.cancel().catch(() => {});
       return sendJson(res, 413, { error: "Vídeo excede o limite de 500 MiB" });
     }
 
@@ -676,22 +669,114 @@ async function streamTikTok(payload, req, res) {
     const sizeGuard = new Transform({
       transform(chunk, encoding, callback) {
         bytes += chunk.length;
-        if (bytes > MAX_VIDEO_BYTES) {
-          callback(new Error("Vídeo excedeu o limite de 500 MiB"));
-          return;
-        }
+        if (bytes > MAX_VIDEO_BYTES) return callback(new Error("Vídeo excedeu o limite de 500 MiB"));
+        callback(null, chunk);
+      }
+    });
+    await pipeline(Readable.fromWeb(videoResponse.body), sizeGuard, res);
+    return;
+  } catch (err) {
+    if (err.name === "AbortError" || res.destroyed) return;
+    if (res.headersSent) {
+      if (!res.destroyed) res.destroy(err);
+      return;
+    }
+    console.warn("TikWM falhou; tentando fallback yt-dlp no servidor:", err.message);
+  }
+
+  // Fallback remoto próprio: se TikWM cair ou limitar requisições, baixa com yt-dlp.
+  // O vídeo é transmitido em streaming, sem guardar o arquivo inteiro em disco ou RAM.
+  return streamTikTokWithYtDlp(payload.url, req, res, abortController.signal);
+}
+
+async function streamTikTokWithYtDlp(videoUrl, req, res, signal) {
+  let parsed;
+  try { parsed = new URL(videoUrl); } catch {}
+  if (!parsed || parsed.protocol !== "https:" ||
+      !["tiktok.com", "www.tiktok.com", "m.tiktok.com", "vm.tiktok.com", "vt.tiktok.com"].includes(parsed.hostname) ||
+      parsed.username || parsed.password) {
+    return sendJson(res, 400, { error: "URL HTTPS do TikTok inválida" });
+  }
+
+  const child = spawn(YTDLP, [
+    "--no-playlist", "--no-warnings", "--no-progress",
+    "--js-runtimes", "node", "--remote-components", "ejs:github",
+    "--max-filesize", "500M",
+    "-f", "best[ext=mp4]/best",
+    "-o", "-",
+    "--", videoUrl
+  ], { stdio: ["ignore", "pipe", "pipe"] });
+
+  let stderr = "";
+  let settled = false;
+  let timer;
+  const cleanup = () => {
+    clearTimeout(timer);
+    signal?.removeEventListener("abort", abortChild);
+  };
+  const abortChild = () => {
+    if (child.exitCode === null) child.kill("SIGTERM");
+    setTimeout(() => { if (child.exitCode === null) child.kill("SIGKILL"); }, 1500).unref();
+  };
+  signal?.addEventListener("abort", abortChild, { once: true });
+  res.once("close", () => { if (!res.writableEnded) abortChild(); });
+  timer = setTimeout(() => abortChild(), YTDLP_TIMEOUT_MS);
+  timer.unref();
+
+  child.stderr.setEncoding("utf8");
+  child.stderr.on("data", chunk => { stderr = (stderr + chunk).slice(-3000); });
+
+  try {
+    const firstChunk = await new Promise((resolve, reject) => {
+      child.stdout.once("data", chunk => {
+        child.stdout.pause();
+        resolve(chunk);
+      });
+      child.once("error", reject);
+      child.once("close", code => {
+        if (code !== 0) reject(new Error(stderr.trim() || "yt-dlp terminou com código " + code));
+      });
+      if (signal?.aborted) reject(new Error("Pedido cancelado pelo cliente"));
+    });
+
+    if (res.destroyed) {
+      abortChild();
+      return;
+    }
+
+    res.writeHead(200, {
+      "content-type": "video/mp4",
+      "content-disposition": 'attachment; filename="tiktok-video.mp4"',
+      "cache-control": "no-store",
+      "x-content-type-options": "nosniff"
+    });
+
+    let bytes = firstChunk.length;
+    if (bytes > MAX_VIDEO_BYTES) throw new Error("Vídeo excedeu o limite de 500 MiB");
+    const sizeGuard = new Transform({
+      transform(chunk, encoding, callback) {
+        bytes += chunk.length;
+        if (bytes > MAX_VIDEO_BYTES) return callback(new Error("Vídeo excedeu o limite de 500 MiB"));
         callback(null, chunk);
       }
     });
 
-    await pipeline(Readable.fromWeb(videoResponse.body), sizeGuard, res);
+    child.stdout.unshift(firstChunk);
+    child.stdout.resume();
+    await pipeline(child.stdout, sizeGuard, res);
+    settled = true;
   } catch (err) {
-    if (err.name === "AbortError" || res.destroyed) return;
-    if (!res.headersSent) {
-      sendJson(res, 502, { error: "Falha ao consultar TikWM ou transmitir o vídeo" });
-    } else {
+    if (!res.destroyed && !res.headersSent) {
+      sendJson(res, 502, {
+        error: "TikWM e yt-dlp do servidor falharam",
+        details: String(err.message || stderr || "Erro desconhecido").slice(0, 900)
+      });
+    } else if (!res.destroyed) {
       res.destroy(err);
     }
+  } finally {
+    cleanup();
+    if (child.exitCode === null) child.kill("SIGTERM");
   }
 }
 
