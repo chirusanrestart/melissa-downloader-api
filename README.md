@@ -1,6 +1,6 @@
 # Melissa Downloader API 🐢
 
-API HTTP em Node.js nativo, sem Express e sem dependências npm externas. Suporta vídeos do TikTok via TikWM, vídeos do YouTube e Instagram via `yt-dlp`, e pesquisa de pins no Pinterest usando a biblioteca dedicada `pinterest-dl`. O conteúdo de vídeo é transmitido diretamente ao cliente, sem salvar o vídeo inteiro em disco ou na memória.
+API HTTP em Node.js nativo, sem Express. Para vídeos do TikTok, tenta primeiro o TikWM e, se ele falhar, usa `yt-dlp` como fallback no servidor. YouTube e Instagram também usam `yt-dlp`; a pesquisa de pins do Pinterest usa `pinterest-dl`. O conteúdo de vídeo é transmitido diretamente ao cliente, sem salvar o vídeo inteiro em disco ou na memória.
 
 ## Endpoints
 
@@ -87,7 +87,7 @@ Configure `API_KEY` nos Secrets do Hostless. Não coloque chaves reais no Git.
 
 ## Limitações
 
-- TikTok depende da API externa TikWM.
+- TikTok tenta primeiro a API externa TikWM e usa `yt-dlp` no servidor se o TikWM falhar. O fallback requer que o executável `yt-dlp` e os componentes de runtime necessários estejam instalados no ambiente Hostless.
 - A extração do Instagram pode falhar se a publicação não for pública, exigir login ou o Instagram bloquear a requisição mesmo com impersonação.
 - A pesquisa do Pinterest depende da disponibilidade da API usada pela biblioteca `pinterest-dl` e pode ser limitada pelo próprio Pinterest.
 - A extração do YouTube pode falhar se o YouTube alterar seus mecanismos, se o runtime Node.js não estiver disponível, ou se o formato combinado MP4 não existir para o vídeo.
