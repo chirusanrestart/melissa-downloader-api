@@ -1546,7 +1546,7 @@ async function createPinterestStickerPack(payload, res) {
       publisher,
       items: unique.map(item => ({
         src: item.src,
-        animated: /\\.gif(?:[?#]|$)/i.test(String(item.src || ""))
+        animated: /\.gif(?:[?#]|$)/i.test(String(item.src || ""))
       }))
     }, res);
   } catch (error) {
