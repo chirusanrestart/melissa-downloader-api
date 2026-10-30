@@ -1525,6 +1525,42 @@ async function streamYouTube(videoUrl, req, res, mode = "video", platform = "you
   });
 }
 
+async function createPinterestStickerPack(payload, res) {
+  const query = String(payload.query || "").trim().slice(0, 200);
+  if (!query) return sendJson(res, 400, { error: "Informe o nome do pack no campo query." });
+
+  const packname = String(payload.packname || query).trim().slice(0, 128) || query;
+  const publisher = String(payload.publisher || "Chiru-san-bot").trim().slice(0, 128) || "Chiru-san-bot";
+
+  try {
+    // A pesquisa e os downloads acontecem integralmente na nuvem.
+    const candidates = await searchPinterest(query, 1, 60);
+    const unique = dedupePinterestResults(candidates).slice(0, 60);
+    if (!unique.length) {
+      return sendJson(res, 404, { error: "Nenhuma imagem encontrada no Pinterest.", query });
+    }
+
+    console.log(`[PINTEREST PACK] "${query}": ${unique.length} imagens encontradas; iniciando processamento sequencial.`);
+    return await processStickerPack({
+      packname,
+      publisher,
+      items: unique.map(item => ({
+        src: item.src,
+        animated: /\.gif(?:[?#]|$)/i.test(String(item.src || ""))
+      }))
+    }, res);
+  } catch (error) {
+    console.error("[PINTEREST PACK] Falha:", error.message);
+    if (!res.headersSent && !res.destroyed) {
+      return sendJson(res, 502, {
+        error: "Falha ao pesquisar ou processar o pack no Pinterest.",
+        details: String(error.message || "").slice(0, 500)
+      });
+    }
+  }
+}
+
+
 const server = http.createServer(async (req, res) => {
   let parsedRequest;
   try {
@@ -1541,11 +1577,11 @@ const server = http.createServer(async (req, res) => {
       service: "melissa-downloader-api",
       runtime: "node",
       port: PORT,
-      endpoints: ["POST /download", "POST /youtube/search", "POST /youtube/playlist", "POST /youtube/playlist/download (faixa individual)", "POST /pinterest/search", "POST /pinterest/image", "POST /media/process-pack", "POST /media/sticker", "POST /media/toimg", "POST /media/hd"]
+      endpoints: ["POST /download", "POST /youtube/search", "POST /youtube/playlist", "POST /youtube/playlist/download (faixa individual)", "POST /pinterest/search", "POST /pinterest/image", "POST /pinterest/pack", "POST /media/process-pack", "POST /media/sticker", "POST /media/toimg", "POST /media/hd"]
     });
   }
 
-  if (req.method !== "POST" || !["/download", "/pinterest/search", "/pinterest/image", "/youtube/search", "/youtube/playlist", "/youtube/playlist/download", "/media/process-pack", "/media/sticker", "/media/toimg", "/media/hd"].includes(pathname)) {
+  if (req.method !== "POST" || !["/download", "/pinterest/search", "/pinterest/image", "/pinterest/pack", "/youtube/search", "/youtube/playlist", "/youtube/playlist/download", "/media/process-pack", "/media/sticker", "/media/toimg", "/media/hd"].includes(pathname)) {
     return sendJson(res, 404, { error: "Rota não encontrada" });
   }
 
@@ -1600,6 +1636,7 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (pathname === "/pinterest/image") return sendPinterestImage(payload, res);
+  if (pathname === "/pinterest/pack") return createPinterestStickerPack(payload, res);
   if (pathname === "/media/sticker" || pathname === "/media/toimg" || pathname === "/media/hd") return processSingleMedia(payload, pathname, res);
   if (pathname === "/media/process-pack") return processStickerPack(payload, res);
 
