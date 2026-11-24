@@ -1191,7 +1191,7 @@ async function streamViaReverseAgent(videoUrl, req, res, mode) {
   try {
     const upstream = await fetch(endpoint, {
       method: "GET",
-      headers: { "x-downloader-token": API_KEY },
+      headers: { "x-api-key": API_KEY },
       signal: controller.signal
     });
     if (!upstream.ok || !upstream.body) {
