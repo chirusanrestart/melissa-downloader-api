@@ -97,10 +97,12 @@ Configure `API_KEY` nos Secrets do Hostless. Não coloque chaves reais no Git.
 
 ## Fallback reverso pelo Termux
 
-Se as tentativas locais do YouTube e o VideoScale falharem, a API pode delegar a última tentativa ao agente Termux do A10s. O agente usa a conexão residencial, executa yt-dlp e devolve a mídia pelo relay `melissa-iptv`.
+Se as tentativas locais do YouTube e o VideoScale falharem, a API pode delegar a última tentativa ao agente Termux do A10s. A fila, o polling e o recebimento do arquivo ficam hospedados na própria Melissa Downloader API. O agente usa a conexão residencial e devolve a mídia diretamente à API, sem passar pelo servidor IPTV.
 
 Configure nos Secrets do Hostless da API:
-- `REVERSE_AGENT_URL=https://melissa-iptv.hostless.app/reverse-download`
-- O relay e o agente Termux usam a mesma `API_KEY` privada já configurada na API principal. Não é necessário criar outro token.
+- `REVERSE_AGENT_URL=https://melissa-api-server.hostless.app/reverse-download` (opcional; esse já é o endereço padrão no código).
+- O agente Termux usa a mesma `API_KEY` privada já configurada na API principal. Não é necessário criar outro token.
+
+O agente consulta `GET /download-agent/poll` e envia a resposta em `POST /download-agent/respond/:id`, sempre autenticado com `X-API-Key`.
 
 O fallback é opcional. Sem essas variáveis, o comportamento anterior é mantido. A integração reversa aceita apenas URLs oficiais HTTPS do YouTube e os modos `video` e `audio`.
