@@ -21,3 +21,14 @@ test("mantém compatibilidade com respostas que usam format_id minúsculo", () =
 
   assert.equal(chooseVideoScaleFormat(payload, "video"), "18");
 });
+
+test("ordena vídeos pela resolução textual quando height não é fornecido", () => {
+  const payload = {
+    formats: [
+      { FORMAT_ID: "360", ext: "mp4", vcodec: "avc1", acodec: "mp4a", resolution: "360p" },
+      { FORMAT_ID: "720", ext: "mp4", vcodec: "avc1", acodec: "mp4a", resolution: "720p" }
+    ]
+  };
+
+  assert.equal(chooseVideoScaleFormat(payload, "video"), "720");
+});
