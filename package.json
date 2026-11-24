@@ -5,7 +5,8 @@
   "type": "module",
   "description": "API Node.js para TikTok via TikWM, YouTube via yt-dlp e yt-search, e pesquisa Pinterest via pinterest-dl",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "test": "node --test"
   },
   "engines": {
     "node": ">=20"
