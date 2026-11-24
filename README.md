@@ -101,6 +101,6 @@ Se as tentativas locais do YouTube e o VideoScale falharem, a API pode delegar a
 
 Configure nos Secrets do Hostless da API:
 - `REVERSE_AGENT_URL=https://melissa-iptv.hostless.app/reverse-download`
-- `REVERSE_AGENT_TOKEN`: o mesmo segredo aleatório de pelo menos 32 caracteres configurado no relay e no agente Termux.
+- O relay e o agente Termux usam a mesma `API_KEY` privada já configurada na API principal. Não é necessário criar outro token.
 
 O fallback é opcional. Sem essas variáveis, o comportamento anterior é mantido. A integração reversa aceita apenas URLs oficiais HTTPS do YouTube e os modos `video` e `audio`.
