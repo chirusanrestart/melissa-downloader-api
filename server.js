@@ -125,7 +125,7 @@ const PYTHON = process.env.PYTHON_PATH || "python";
 const YTDLP_TIMEOUT_MS = 180_000;
 const REVERSE_AGENT_URL = process.env.REVERSE_AGENT_URL || "";
 const REVERSE_AGENT_TOKEN = process.env.REVERSE_AGENT_TOKEN || "";
-const REVERSE_AGENT_TIMEOUT_MS = Math.max(60_000, Number(process.env.REVERSE_AGENT_TIMEOUT_MS || 600_000));
+const REVERSE_AGENT_TIMEOUT_MS = Math.max(60_000, Number(process.env.REVERSE_AGENT_TIMEOUT_MS || 690_000));
 
 
 function searchPinterest(query, min, max) {
