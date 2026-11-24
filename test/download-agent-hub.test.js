@@ -7,22 +7,38 @@ import { createDownloadAgentHub } from "../download-agent-hub.js";
 
 const API_KEY = "test-shared-api-key";
 
+const messageReaders = new WeakMap();
+
 function nextMessage(socket, timeoutMs = 1500) {
+  let reader = messageReaders.get(socket);
+  if (!reader) {
+    const queue = [];
+    const waiters = [];
+    socket.on("message", raw => {
+      let message;
+      try {
+        message = JSON.parse(raw.toString());
+      } catch (error) {
+        while (waiters.length) waiters.shift().reject(error);
+        return;
+      }
+      const waiter = waiters.shift();
+      if (waiter) waiter.resolve(message);
+      else queue.push(message);
+    });
+    reader = { queue, waiters };
+    messageReaders.set(socket, reader);
+  }
+
+  if (reader.queue.length) return Promise.resolve(reader.queue.shift());
   return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => {
-      socket.off("message", onMessage);
+    const waiter = { resolve, reject, timer: null };
+    waiter.timer = setTimeout(() => {
+      const index = reader.waiters.indexOf(waiter);
+      if (index !== -1) reader.waiters.splice(index, 1);
       reject(new Error("Timed out waiting for WebSocket message"));
     }, timeoutMs);
-    const onMessage = raw => {
-      clearTimeout(timer);
-      socket.off("message", onMessage);
-      try {
-        resolve(JSON.parse(raw.toString()));
-      } catch (error) {
-        reject(error);
-      }
-    };
-    socket.on("message", onMessage);
+    reader.waiters.push(waiter);
   });
 }
 
