@@ -19,6 +19,6 @@ RUN apt-get update \
 WORKDIR /app
 COPY package.json ./
 RUN npm install --omit=dev
-COPY server.js pinterest_search.py videoscale-format.js ./
+COPY server.js download-agent-hub.js pinterest_search.py videoscale-format.js ./
 EXPOSE 8000
 CMD ["npm", "start"]
