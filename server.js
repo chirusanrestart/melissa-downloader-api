@@ -11,6 +11,7 @@ import yts from "yt-search";
 import sharp from "sharp";
 import webp from "node-webpmux";
 import { chooseVideoScaleFormat } from "./videoscale-format.js";
+import { createDownloadAgentHub } from "./download-agent-hub.js";
 
 function runYtDlpJson(args, { timeoutMs = 60_000, maxOutputBytes = 2 * 1024 * 1024 } = {}) {
   return new Promise((resolve, reject) => {
@@ -128,8 +129,7 @@ const REVERSE_AGENT_URL = "https://melissa-api-server.hostless.app/reverse-downl
 const REVERSE_AGENT_TIMEOUT_MS = Math.max(60_000, Number(process.env.REVERSE_AGENT_TIMEOUT_MS || 690_000));
 const DOWNLOAD_AGENT_TIMEOUT_MS = Math.max(60_000, Number(process.env.DOWNLOAD_AGENT_TIMEOUT_MS || 660_000));
 const pendingDownloadRequests = new Map();
-const downloadQueue = [];
-const downloadPollWaiters = [];
+let downloadAgentHub;
 
 
 function searchPinterest(query, min, max) {
@@ -1584,46 +1584,6 @@ async function createPinterestStickerPack(payload, res) {
 
 
 
-function dispatchDownloadJob(job) {
-  const waiter = downloadPollWaiters.shift();
-  if (waiter) {
-    clearTimeout(waiter.timer);
-    waiter.resolve(job);
-  } else {
-    downloadQueue.push(job);
-  }
-}
-
-async function handleDownloadAgentPoll(req, res) {
-  let job = downloadQueue.shift() || null;
-  if (!job) {
-    job = await new Promise(resolve => {
-      const waiter = {
-        resolve,
-        timer: setTimeout(() => {
-          const index = downloadPollWaiters.indexOf(waiter);
-          if (index !== -1) downloadPollWaiters.splice(index, 1);
-          resolve(null);
-        }, 25_000)
-      };
-      downloadPollWaiters.push(waiter);
-      res.once("close", () => {
-        clearTimeout(waiter.timer);
-        const index = downloadPollWaiters.indexOf(waiter);
-        if (index !== -1) downloadPollWaiters.splice(index, 1);
-        resolve(null);
-      });
-    });
-  }
-  if (res.destroyed || res.writableEnded) return;
-  if (!job) {
-    res.writeHead(204, { "cache-control": "no-store" });
-    res.end();
-    return;
-  }
-  return sendJson(res, 200, job);
-}
-
 function safeDownloadResponseHeaders(input) {
   const allowed = new Set([
     "content-type", "content-range", "accept-ranges", "cache-control",
@@ -1749,10 +1709,9 @@ function handleReverseDownload(req, res, url) {
       clearTimeout(pending.timer);
       pendingDownloadRequests.delete(requestId);
     }
-    const queuedIndex = downloadQueue.findIndex(item => item.id === requestId);
-    if (queuedIndex !== -1) downloadQueue.splice(queuedIndex, 1);
+    downloadAgentHub.removeQueuedJob(requestId);
   });
-  dispatchDownloadJob(job);
+  downloadAgentHub.enqueue(job);
 }
 
 const server = http.createServer(async (req, res) => {
@@ -1764,13 +1723,6 @@ const server = http.createServer(async (req, res) => {
   }
 
   const pathname = parsedRequest.pathname;
-
-  if (pathname === "/download-agent/poll" && req.method === "GET") {
-    if (!API_KEY || req.headers["x-api-key"] !== API_KEY) {
-      return sendJson(res, API_KEY ? 401 : 503, { error: "Agente reverso não autorizado ou API_KEY não configurada" });
-    }
-    return handleDownloadAgentPoll(req, res);
-  }
 
   const downloadResponseMatch = pathname.match(/^\/download-agent\/respond\/([0-9a-f-]{36})$/i);
   if (downloadResponseMatch && req.method === "POST") {
@@ -1791,7 +1743,8 @@ const server = http.createServer(async (req, res) => {
       service: "melissa-downloader-api",
       runtime: "node",
       port: PORT,
-      endpoints: ["POST /download", "POST /youtube/search", "POST /youtube/playlist", "POST /youtube/playlist/download (faixa individual)", "POST /pinterest/search", "POST /pinterest/image", "POST /pinterest/pack", "POST /media/process-pack", "POST /media/sticker", "POST /media/toimg", "POST /media/hd", "GET /reverse-download", "GET /download-agent/poll", "POST /download-agent/respond/:id"]
+      download_agent: downloadAgentHub.getStatus(),
+      endpoints: ["POST /download", "POST /youtube/search", "POST /youtube/playlist", "POST /youtube/playlist/download (faixa individual)", "POST /pinterest/search", "POST /pinterest/image", "POST /pinterest/pack", "POST /media/process-pack", "POST /media/sticker", "POST /media/toimg", "POST /media/hd", "GET /reverse-download", "WebSocket /download-agent/connect", "POST /download-agent/respond/:id"]
     });
   }
 
@@ -1929,6 +1882,11 @@ const server = http.createServer(async (req, res) => {
   return sendJson(res, 400, {
     error: "URL não suportada. Envie um link HTTPS do TikTok, YouTube ou Instagram."
   });
+});
+
+downloadAgentHub = createDownloadAgentHub(server, {
+  apiKey: API_KEY,
+  isPending: requestId => pendingDownloadRequests.has(requestId)
 });
 
 if (!API_KEY) {
