@@ -1772,7 +1772,7 @@ const server = http.createServer(async (req, res) => {
     return handleDownloadAgentPoll(req, res);
   }
 
-  const downloadResponseMatch = pathname.match(/^\\/download-agent\\/respond\\/([0-9a-f-]{36})$/i);
+  const downloadResponseMatch = pathname.match(/^\/download-agent\/respond\/([0-9a-f-]{36})$/i);
   if (downloadResponseMatch && req.method === "POST") {
     if (!API_KEY || req.headers["x-api-key"] !== API_KEY) {
       req.resume();
