@@ -1208,7 +1208,7 @@ async function streamViaReverseAgent(videoUrl, req, res, mode) {
       "x-content-type-options": "nosniff"
     };
     const contentLength = upstream.headers.get("content-length");
-    if (contentLength && /^\\d+$/.test(contentLength)) headers["content-length"] = contentLength;
+    if (contentLength && /^\d+$/.test(contentLength)) headers["content-length"] = contentLength;
     if (mode === "audio") headers["x-audio-format"] = "m4a-aac";
     res.writeHead(200, headers);
     await pipeline(Readable.fromWeb(upstream.body), res);
