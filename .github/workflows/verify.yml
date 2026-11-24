@@ -14,5 +14,6 @@ jobs:
           node-version: 22
       - run: npm install
       - run: node --check server.js
+      - run: node --check download-agent-hub.js
       - run: node --check videoscale-format.js
       - run: npm test
