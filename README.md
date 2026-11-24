@@ -101,6 +101,6 @@ Se as tentativas locais do YouTube e o VideoScale falharem, a API pode delegar a
 
 O endereço de retorno é definido diretamente no código como `https://melissa-api-server.hostless.app/reverse-download`; não configure endereço do IPTV nesse fluxo. O agente Termux usa a mesma `API_KEY` privada já configurada nos Secrets desta API. Não é necessário criar outro token.
 
-O agente consulta `GET /download-agent/poll` e envia a resposta em `POST /download-agent/respond/:id`, sempre autenticado com `X-API-Key`. O tempo limite pode ser ajustado por `REVERSE_AGENT_TIMEOUT_MS`.
+O agente abre uma conexão WebSocket persistente em `wss://melissa-api-server.hostless.app/download-agent/connect`, autenticada com a mesma `X-API-Key`. O A10s envia heartbeats periódicos para indicar que continua online; a API envia as tarefas pelo canal assim que precisa do celular. O arquivo continua retornando por `POST /download-agent/respond/:id`. O tempo limite pode ser ajustado por `REVERSE_AGENT_TIMEOUT_MS`.
 
 A integração reversa aceita apenas URLs oficiais HTTPS do YouTube e os modos `video` e `audio`.
