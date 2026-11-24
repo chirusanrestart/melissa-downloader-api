@@ -1,4 +1,5 @@
 import http from "node:http";
+import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import { Readable, Transform } from "node:stream";
 import { createReadStream, createWriteStream } from "node:fs";
@@ -123,9 +124,12 @@ const MAX_VIDEO_BYTES = 500 * 1024 * 1024;
 const YTDLP = process.env.YTDLP_PATH || "yt-dlp";
 const PYTHON = process.env.PYTHON_PATH || "python";
 const YTDLP_TIMEOUT_MS = 180_000;
-const REVERSE_AGENT_URL = process.env.REVERSE_AGENT_URL || "";
-
+const REVERSE_AGENT_URL = process.env.REVERSE_AGENT_URL || "https://melissa-api-server.hostless.app/reverse-download";
 const REVERSE_AGENT_TIMEOUT_MS = Math.max(60_000, Number(process.env.REVERSE_AGENT_TIMEOUT_MS || 690_000));
+const DOWNLOAD_AGENT_TIMEOUT_MS = Math.max(60_000, Number(process.env.DOWNLOAD_AGENT_TIMEOUT_MS || 660_000));
+const pendingDownloadRequests = new Map();
+const downloadQueue = [];
+const downloadPollWaiters = [];
 
 
 function searchPinterest(query, min, max) {
@@ -1579,6 +1583,178 @@ async function createPinterestStickerPack(payload, res) {
 }
 
 
+
+function dispatchDownloadJob(job) {
+  const waiter = downloadPollWaiters.shift();
+  if (waiter) {
+    clearTimeout(waiter.timer);
+    waiter.resolve(job);
+  } else {
+    downloadQueue.push(job);
+  }
+}
+
+async function handleDownloadAgentPoll(req, res) {
+  let job = downloadQueue.shift() || null;
+  if (!job) {
+    job = await new Promise(resolve => {
+      const waiter = {
+        resolve,
+        timer: setTimeout(() => {
+          const index = downloadPollWaiters.indexOf(waiter);
+          if (index !== -1) downloadPollWaiters.splice(index, 1);
+          resolve(null);
+        }, 25_000)
+      };
+      downloadPollWaiters.push(waiter);
+      res.once("close", () => {
+        clearTimeout(waiter.timer);
+        const index = downloadPollWaiters.indexOf(waiter);
+        if (index !== -1) downloadPollWaiters.splice(index, 1);
+        resolve(null);
+      });
+    });
+  }
+  if (res.destroyed || res.writableEnded) return;
+  if (!job) {
+    res.writeHead(204, { "cache-control": "no-store" });
+    res.end();
+    return;
+  }
+  return sendJson(res, 200, job);
+}
+
+function safeDownloadResponseHeaders(input) {
+  const allowed = new Set([
+    "content-type", "content-range", "accept-ranges", "cache-control",
+    "etag", "last-modified", "content-disposition", "content-length",
+    "expires", "vary", "x-content-type-options", "x-audio-format"
+  ]);
+  const output = {};
+  for (const [name, value] of Object.entries(input || {})) {
+    const key = String(name).toLowerCase();
+    if (allowed.has(key) && typeof value === "string") output[key] = value;
+  }
+  return output;
+}
+
+function handleDownloadAgentResponse(req, res, requestId) {
+  const pending = pendingDownloadRequests.get(requestId);
+  if (!pending || pending.res.destroyed || pending.res.writableEnded) {
+    req.resume();
+    res.writeHead(410);
+    res.end("Download request expired");
+    return;
+  }
+
+  let headers = {};
+  try {
+    const encoded = String(req.headers["x-upstream-headers"] || "");
+    if (encoded) {
+      headers = safeDownloadResponseHeaders(
+        JSON.parse(Buffer.from(encoded, "base64").toString("utf8"))
+      );
+    }
+  } catch {
+    req.resume();
+    res.writeHead(400);
+    res.end("Invalid upstream headers");
+    return;
+  }
+
+  const status = Number(req.headers["x-upstream-status"] || 200);
+  if (!Number.isInteger(status) || status < 100 || status > 599) {
+    req.resume();
+    res.writeHead(400);
+    res.end("Invalid upstream status");
+    return;
+  }
+
+  clearTimeout(pending.timer);
+  pending.res.writeHead(status, headers);
+  pending.res.once("close", () => {
+    if (!pending.res.writableEnded && !req.destroyed) req.destroy();
+  });
+  req.on("error", error => {
+    pendingDownloadRequests.delete(requestId);
+    if (!pending.res.destroyed) pending.res.destroy(error);
+    if (!res.headersSent) {
+      res.writeHead(502);
+      res.end("Response stream failed");
+    }
+  });
+  req.on("end", () => {
+    pendingDownloadRequests.delete(requestId);
+    if (!res.headersSent) {
+      res.writeHead(200, {
+        "content-type": "text/plain; charset=utf-8",
+        "cache-control": "no-store"
+      });
+      res.end("stream accepted");
+    }
+  });
+  req.pipe(pending.res);
+}
+
+function handleReverseDownload(req, res, url) {
+  if (req.method !== "GET") {
+    res.writeHead(405, { allow: "GET" });
+    res.end();
+    return;
+  }
+  if (!API_KEY || req.headers["x-api-key"] !== API_KEY) {
+    return sendJson(res, API_KEY ? 401 : 503, {
+      error: API_KEY ? "X-API-Key inválida" : "API_KEY não configurada"
+    });
+  }
+
+  const rawUrl = url.searchParams.get("url");
+  let mediaUrl;
+  try { mediaUrl = new URL(rawUrl); } catch {}
+  if (!mediaUrl || !isYouTubeUrl(mediaUrl.toString()) ||
+      mediaUrl.protocol !== "https:" || mediaUrl.username ||
+      mediaUrl.password || mediaUrl.port) {
+    return sendJson(res, 400, { error: "Apenas URLs HTTPS oficiais do YouTube são aceitas" });
+  }
+
+  const mode = url.searchParams.get("mode") || "video";
+  if (mode !== "video" && mode !== "audio") {
+    return sendJson(res, 400, { error: "Modo deve ser video ou audio" });
+  }
+
+  const requestId = randomUUID();
+  const job = {
+    id: requestId,
+    method: "GET",
+    path: "/_downloader-reverse?url=" + encodeURIComponent(mediaUrl.toString()) + "&mode=" + mode,
+    headers: {}
+  };
+  const timer = setTimeout(() => {
+    const pending = pendingDownloadRequests.get(requestId);
+    if (!pending) return;
+    pendingDownloadRequests.delete(requestId);
+    if (!pending.res.headersSent) {
+      sendJson(pending.res, 504, { error: "O agente Termux não respondeu dentro do tempo limite" });
+    } else if (!pending.res.destroyed) {
+      pending.res.destroy();
+    }
+  }, DOWNLOAD_AGENT_TIMEOUT_MS);
+  timer.unref();
+  pendingDownloadRequests.set(requestId, { res, timer });
+
+  res.once("close", () => {
+    if (res.writableEnded) return;
+    const pending = pendingDownloadRequests.get(requestId);
+    if (pending) {
+      clearTimeout(pending.timer);
+      pendingDownloadRequests.delete(requestId);
+    }
+    const queuedIndex = downloadQueue.findIndex(item => item.id === requestId);
+    if (queuedIndex !== -1) downloadQueue.splice(queuedIndex, 1);
+  });
+  dispatchDownloadJob(job);
+}
+
 const server = http.createServer(async (req, res) => {
   let parsedRequest;
   try {
@@ -1589,13 +1765,33 @@ const server = http.createServer(async (req, res) => {
 
   const pathname = parsedRequest.pathname;
 
+  if (pathname === "/download-agent/poll" && req.method === "GET") {
+    if (!API_KEY || req.headers["x-api-key"] !== API_KEY) {
+      return sendJson(res, API_KEY ? 401 : 503, { error: "Agente reverso não autorizado ou API_KEY não configurada" });
+    }
+    return handleDownloadAgentPoll(req, res);
+  }
+
+  const downloadResponseMatch = pathname.match(/^\\/download-agent\\/respond\\/([0-9a-f-]{36})$/i);
+  if (downloadResponseMatch && req.method === "POST") {
+    if (!API_KEY || req.headers["x-api-key"] !== API_KEY) {
+      req.resume();
+      return sendJson(res, API_KEY ? 401 : 503, { error: "Agente reverso não autorizado ou API_KEY não configurada" });
+    }
+    return handleDownloadAgentResponse(req, res, downloadResponseMatch[1]);
+  }
+
+  if (pathname === "/reverse-download") {
+    return handleReverseDownload(req, res, parsedRequest);
+  }
+
   if (req.method === "GET" && (pathname === "/" || pathname === "/health")) {
     return sendJson(res, 200, {
       ok: true,
       service: "melissa-downloader-api",
       runtime: "node",
       port: PORT,
-      endpoints: ["POST /download", "POST /youtube/search", "POST /youtube/playlist", "POST /youtube/playlist/download (faixa individual)", "POST /pinterest/search", "POST /pinterest/image", "POST /pinterest/pack", "POST /media/process-pack", "POST /media/sticker", "POST /media/toimg", "POST /media/hd"]
+      endpoints: ["POST /download", "POST /youtube/search", "POST /youtube/playlist", "POST /youtube/playlist/download (faixa individual)", "POST /pinterest/search", "POST /pinterest/image", "POST /pinterest/pack", "POST /media/process-pack", "POST /media/sticker", "POST /media/toimg", "POST /media/hd", "GET /reverse-download", "GET /download-agent/poll", "POST /download-agent/respond/:id"]
     });
   }
 
