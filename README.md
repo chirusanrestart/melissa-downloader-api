@@ -93,3 +93,14 @@ Configure `API_KEY` nos Secrets do Hostless. Não coloque chaves reais no Git.
 - A extração do YouTube pode falhar se o YouTube alterar seus mecanismos, se o runtime Node.js não estiver disponível, ou se o formato combinado MP4 não existir para o vídeo.
 - A saída direta do `yt-dlp` é intencional: se ocorrer erro depois do início do vídeo, a conexão será encerrada para não apresentar um arquivo parcial como completo.
 - Use apenas conteúdo que você tem autorização para baixar.
+
+
+## Fallback reverso pelo Termux
+
+Se as tentativas locais do YouTube e o VideoScale falharem, a API pode delegar a última tentativa ao agente Termux do A10s. O agente usa a conexão residencial, executa yt-dlp e devolve a mídia pelo relay `melissa-iptv`.
+
+Configure nos Secrets do Hostless da API:
+- `REVERSE_AGENT_URL=https://melissa-iptv.hostless.app/reverse-download`
+- `REVERSE_AGENT_TOKEN`: o mesmo segredo aleatório de pelo menos 32 caracteres configurado no relay e no agente Termux.
+
+O fallback é opcional. Sem essas variáveis, o comportamento anterior é mantido. A integração reversa aceita apenas URLs oficiais HTTPS do YouTube e os modos `video` e `audio`.
