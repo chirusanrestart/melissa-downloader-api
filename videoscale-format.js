@@ -40,8 +40,8 @@ export function chooseVideoScaleFormat(payload, mode) {
   candidates.sort((a, b) => {
     const aExt = String(a.ext ?? a.extension ?? "").toLowerCase();
     const bExt = String(b.ext ?? b.extension ?? "").toLowerCase();
-    const aHeight = Number(a.height ?? String(a.resolution ?? "").match(/(\\d+)p/)?.[1] ?? 0);
-    const bHeight = Number(b.height ?? String(b.resolution ?? "").match(/(\\d+)p/)?.[1] ?? 0);
+    const aHeight = Number(a.height ?? String(a.resolution ?? "").match(/(\d+)p/)?.[1] ?? 0);
+    const bHeight = Number(b.height ?? String(b.resolution ?? "").match(/(\d+)p/)?.[1] ?? 0);
     if (mode === "audio") {
       return (aHeight || Number.MAX_SAFE_INTEGER) - (bHeight || Number.MAX_SAFE_INTEGER);
     }
