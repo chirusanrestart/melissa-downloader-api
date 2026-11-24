@@ -124,7 +124,7 @@ const YTDLP = process.env.YTDLP_PATH || "yt-dlp";
 const PYTHON = process.env.PYTHON_PATH || "python";
 const YTDLP_TIMEOUT_MS = 180_000;
 const REVERSE_AGENT_URL = process.env.REVERSE_AGENT_URL || "";
-const REVERSE_AGENT_TOKEN = process.env.REVERSE_AGENT_TOKEN || "";
+
 const REVERSE_AGENT_TIMEOUT_MS = Math.max(60_000, Number(process.env.REVERSE_AGENT_TIMEOUT_MS || 690_000));
 
 
@@ -1171,8 +1171,8 @@ async function streamYouTubeMergedFallback(videoUrl, res, metadata) {
 }
 
 async function streamViaReverseAgent(videoUrl, req, res, mode) {
-  if (!REVERSE_AGENT_URL || !REVERSE_AGENT_TOKEN) {
-    throw new Error("REVERSE_AGENT_URL/REVERSE_AGENT_TOKEN não configurados");
+  if (!REVERSE_AGENT_URL || !API_KEY) {
+    throw new Error("REVERSE_AGENT_URL/API_KEY não configurados");
   }
   const endpoint = new URL(REVERSE_AGENT_URL);
   endpoint.searchParams.set("url", videoUrl);
@@ -1191,7 +1191,7 @@ async function streamViaReverseAgent(videoUrl, req, res, mode) {
   try {
     const upstream = await fetch(endpoint, {
       method: "GET",
-      headers: { "x-downloader-token": REVERSE_AGENT_TOKEN },
+      headers: { "x-downloader-token": API_KEY },
       signal: controller.signal
     });
     if (!upstream.ok || !upstream.body) {
@@ -1221,7 +1221,7 @@ async function streamViaReverseAgent(videoUrl, req, res, mode) {
 }
 
 async function tryReverseAgent(videoUrl, req, res, mode) {
-  if (!REVERSE_AGENT_URL || !REVERSE_AGENT_TOKEN || res.headersSent || res.destroyed) return false;
+  if (!REVERSE_AGENT_URL || !API_KEY || res.headersSent || res.destroyed) return false;
   try {
     await streamViaReverseAgent(videoUrl, req, res, mode);
     return true;
