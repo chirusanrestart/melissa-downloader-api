@@ -102,8 +102,9 @@ async function createHarness(t) {
 
 async function connectAgent(harness) {
   const socket = harness.connect();
+  const readyPromise = nextMessage(socket);
   await once(socket, "open");
-  const ready = await nextMessage(socket);
+  const ready = await readyPromise;
   assert.equal(ready.type, "ready");
   return socket;
 }
