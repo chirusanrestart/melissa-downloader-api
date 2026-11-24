@@ -123,6 +123,9 @@ const MAX_VIDEO_BYTES = 500 * 1024 * 1024;
 const YTDLP = process.env.YTDLP_PATH || "yt-dlp";
 const PYTHON = process.env.PYTHON_PATH || "python";
 const YTDLP_TIMEOUT_MS = 180_000;
+const REVERSE_AGENT_URL = process.env.REVERSE_AGENT_URL || "";
+const REVERSE_AGENT_TOKEN = process.env.REVERSE_AGENT_TOKEN || "";
+const REVERSE_AGENT_TIMEOUT_MS = Math.max(60_000, Number(process.env.REVERSE_AGENT_TIMEOUT_MS || 600_000));
 
 
 function searchPinterest(query, min, max) {
@@ -1167,7 +1170,69 @@ async function streamYouTubeMergedFallback(videoUrl, res, metadata) {
   }
 }
 
-async function streamYouTubeAudioM4a(videoUrl, res, metadata = null) {
+async function streamViaReverseAgent(videoUrl, req, res, mode) {
+  if (!REVERSE_AGENT_URL || !REVERSE_AGENT_TOKEN) {
+    throw new Error("REVERSE_AGENT_URL/REVERSE_AGENT_TOKEN não configurados");
+  }
+  const endpoint = new URL(REVERSE_AGENT_URL);
+  endpoint.searchParams.set("url", videoUrl);
+  endpoint.searchParams.set("mode", mode);
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(new Error("Tempo limite do downloader reverso")), REVERSE_AGENT_TIMEOUT_MS);
+  timeout.unref();
+  const onRequestAborted = () => controller.abort(new Error("Cliente cancelou o download"));
+  const onResponseClosed = () => {
+    if (!res.writableEnded) controller.abort(new Error("Cliente encerrou a conexão"));
+  };
+  req.once("aborted", onRequestAborted);
+  res.once("close", onResponseClosed);
+
+  try {
+    const upstream = await fetch(endpoint, {
+      method: "GET",
+      headers: { "x-downloader-token": REVERSE_AGENT_TOKEN },
+      signal: controller.signal
+    });
+    if (!upstream.ok || !upstream.body) {
+      const details = (await upstream.text()).slice(0, 1000);
+      throw new Error("Relay reverso respondeu HTTP " + upstream.status + (details ? ": " + details : ""));
+    }
+    const contentType = upstream.headers.get("content-type") || (mode === "audio" ? "audio/mp4" : "video/mp4");
+    const contentDisposition = upstream.headers.get("content-disposition") ||
+      'attachment; filename="' + (mode === "audio" ? "audio.m4a" : "video.mp4") + '"';
+    const headers = {
+      "content-type": contentType,
+      "content-disposition": contentDisposition,
+      "cache-control": "no-store",
+      "x-content-type-options": "nosniff"
+    };
+    const contentLength = upstream.headers.get("content-length");
+    if (contentLength && /^\\d+$/.test(contentLength)) headers["content-length"] = contentLength;
+    if (mode === "audio") headers["x-audio-format"] = "m4a-aac";
+    res.writeHead(200, headers);
+    await pipeline(Readable.fromWeb(upstream.body), res);
+    console.log("Download concluído pelo A10s via túnel reverso", { mode });
+  } finally {
+    clearTimeout(timeout);
+    req.off("aborted", onRequestAborted);
+    res.off("close", onResponseClosed);
+  }
+}
+
+async function tryReverseAgent(videoUrl, req, res, mode) {
+  if (!REVERSE_AGENT_URL || !REVERSE_AGENT_TOKEN || res.headersSent || res.destroyed) return false;
+  try {
+    await streamViaReverseAgent(videoUrl, req, res, mode);
+    return true;
+  } catch (error) {
+    console.error("Fallback do A10s falhou:", error.message);
+    if (res.headersSent && !res.destroyed) res.destroy(error);
+    return res.headersSent || res.destroyed;
+  }
+}
+
+async function streamYouTubeAudioM4a(videoUrl, req, res, metadata = null) {
   // Gera um M4A/AAC completo antes de responder, evitando MIME/extensão incompatíveis.
   const directory = await mkdtemp(join(tmpdir(), "youtube-audio-"));
   let activeChild = null;
@@ -1270,6 +1335,7 @@ async function streamYouTubeAudioM4a(videoUrl, res, metadata = null) {
         return;
       } catch (fallbackError) {
         console.error("VideoScale fallback de áudio falhou:", fallbackError.message);
+        if (await tryReverseAgent(videoUrl, req, res, "audio")) return;
         if (!res.headersSent && !res.destroyed) {
           sendJson(res, 502, {
             error: "Falha no áudio do YouTube via yt-dlp/FFmpeg e VideoScale",
@@ -1281,6 +1347,7 @@ async function streamYouTubeAudioM4a(videoUrl, res, metadata = null) {
         }
       }
     } else if (!res.headersSent && !res.destroyed) {
+      if (await tryReverseAgent(videoUrl, req, res, "audio")) return;
       sendJson(res, 502, {
         error: "Falha ao converter o áudio do YouTube para M4A/AAC",
         details: String(error.message || "Erro desconhecido").slice(0, 900),
@@ -1301,7 +1368,7 @@ async function streamYouTube(videoUrl, req, res, mode = "video", platform = "you
   catch (error) { console.warn("Metadados indisponíveis:", error.message); }
   const isAudio = mode === "audio";
   const isInstagram = platform === "instagram";
-  if (isAudio && !isInstagram) return streamYouTubeAudioM4a(videoUrl, res, metadata);
+  if (isAudio && !isInstagram) return streamYouTubeAudioM4a(videoUrl, req, res, metadata);
   // O YouTube nem sempre oferece um formato combinado moderno; o formato 18
   // costuma ser MP4 com áudio+vídeo em um único fluxo, adequado para streaming.
   // Mantemos um fallback combinado para vídeos em que o formato 18 não existe.
@@ -1382,6 +1449,7 @@ async function streamYouTube(videoUrl, req, res, mode = "video", platform = "you
         return;
       } catch (fallbackError) {
         console.error("VideoScale fallback após erro de inicialização falhou:", fallbackError.message);
+        if (await tryReverseAgent(videoUrl, req, res, mode)) return;
         if (!res.headersSent && !res.destroyed) {
           sendJson(res, 502, {
             error: "yt-dlp não iniciou e o fallback VideoScale falhou",
@@ -1394,6 +1462,7 @@ async function streamYouTube(videoUrl, req, res, mode = "video", platform = "you
       }
       return;
     }
+    if (platform === "youtube" && await tryReverseAgent(videoUrl, req, res, mode)) return;
     if (!res.headersSent && !res.destroyed) {
       sendJson(res, 503, {
         error: "yt-dlp não está instalado ou não pôde ser iniciado",
@@ -1441,6 +1510,7 @@ async function streamYouTube(videoUrl, req, res, mode = "video", platform = "you
         return;
       } catch (fallbackError) {
         console.error("VideoScale fallback falhou:", fallbackError.message);
+        if (platform === "youtube" && await tryReverseAgent(videoUrl, req, res, mode)) return;
         if (!res.headersSent && !res.destroyed) {
           sendJson(res, 502, {
             error: isAudio ? "Falha no YouTube via yt-dlp e VideoScale" : "Falha no vídeo via yt-dlp e VideoScale",
@@ -1454,6 +1524,7 @@ async function streamYouTube(videoUrl, req, res, mode = "video", platform = "you
       return;
     }
 
+    if (platform === "youtube" && await tryReverseAgent(videoUrl, req, res, mode)) return;
     if (!res.headersSent) {
       sendJson(res, 502, {
         error: isAudio ? "Falha ao extrair o áudio do YouTube" : "Falha ao extrair o vídeo do YouTube",
