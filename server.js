@@ -477,7 +477,7 @@ async function processSingleMedia(payload, pathname, res) {
             const child = spawn("ffmpeg", [
               "-hide_banner", "-loglevel", "error", "-y", "-i", inputPath,
               "-t", "10", "-vf",
-              "fps=10,format=yuva420p,scale=512:512:force_original_aspect_ratio=decrease:flags=lanczos,pad=512:512:(ow-iw)/2:(oh-ih)/2:color=black@0,format=yuva420p",
+              "fps=10,format=yuva420p,scale=512:512:force_original_aspect_ratio=decrease:force_divisible_by=2:flags=lanczos,pad=512:512:(ow-iw)/2:(oh-ih)/2:color=black@0,format=yuva420p",
               "-an", "-loop", "0", "-c:v", "libwebp_anim", "-quality", "65",
               "-compression_level", "4", outputPath
             ], { stdio: ["ignore", "ignore", "pipe"] });
