@@ -477,7 +477,7 @@ async function processSingleMedia(payload, pathname, res) {
             const child = spawn("ffmpeg", [
               "-hide_banner", "-loglevel", "error", "-y", "-i", inputPath,
               "-t", "10", "-vf",
-              "fps=10,scale=512:512:force_original_aspect_ratio=increase,crop=512:512",
+              "fps=10,format=yuva420p,scale=512:512:force_original_aspect_ratio=decrease:force_divisible_by=2:flags=lanczos,pad=512:512:(ow-iw)/2:(oh-ih)/2:color=black@0,format=yuva420p",
               "-an", "-loop", "0", "-c:v", "libwebp_anim", "-quality", "65",
               "-compression_level", "4", outputPath
             ], { stdio: ["ignore", "ignore", "pipe"] });
@@ -497,7 +497,7 @@ async function processSingleMedia(payload, pathname, res) {
       } else {
         output = await sharp(input, { limitInputPixels: 40_000_000 })
           .rotate()
-          .resize(512, 512, { fit: "cover", position: "centre" })
+          .resize(512, 512, { fit: "contain", background: { r: 0, g: 0, b: 0, alpha: 0 }, position: "centre" })
           .webp({ quality: 80, effort: 3, smartSubsample: true })
           .toBuffer();
       }
